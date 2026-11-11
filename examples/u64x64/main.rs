@@ -1147,7 +1147,186 @@ fn bench(scenario: &str) -> i32 {
             ),
         ),
     ];
-    for (name, st) in e_rows.into_iter().chain(iso_rows).chain(fixed) {
+    // Route F split (cell + reduce) rows, same inputs as bench_entry. Grids are
+    // allocated once; each reduce row's grid is filled once before timing.
+    let mut g1: BitTile = [0u64; 64];
+    let mut g1r: BitTile = [0u64; 64];
+    route_f::fs_o1_cell(&inp.a, &inp.b, inp.live, &mut g1r);
+    let mut o1 = O1Out::new();
+    let mut ge_c = [0u64; 64];
+    let mut ge_r = [0u64; 64];
+    route_f::fs_o2_cell(&bound, &inp.t, inp.dem, &mut ge_r);
+    let mut g3 = Box::new([[0u16; 64]; 64]);
+    let mut g3r = Box::new([[0u16; 64]; 64]);
+    route_f::fs_o3_cell(&bound, inp.dem, &mut g3r);
+    let mut o3 = O3Out::new();
+    let mut lo_c = Box::new([[0u16; 64]; 64]);
+    let mut hi_c = Box::new([[0u16; 64]; 64]);
+    let mut lo_r = Box::new([[0u16; 64]; 64]);
+    let mut hi_r = Box::new([[0u16; 64]; 64]);
+    route_f::fs_o4_cell(&inp.src.cost, &inp.w, &mut lo_r, &mut hi_r);
+    let mut o4 = O4Out::new();
+    let mut g6 = Box::new([[0u16; 64]; 64]);
+    let mut g6c = Box::new([[0u16; 64]; 64]);
+    let mut g6r = Box::new([[0u16; 64]; 64]);
+    route_f::fs_o6_cell(&bound, &inp.params, &mut g6r);
+    let cap0 = route_f::fs_o6_cap0(&bound, &inp.params);
+    let lut = route_f::CapLut::prepare(u32::from(inp.params.u));
+    let fs_rows: [(&str, harness::Stats); 13] = [
+        (
+            "FS_O1_CELL",
+            cfg.time(
+                "fs_o1_cell",
+                || {
+                    route_f::fs_o1_cell(bb(&inp.a), bb(&inp.b), bb(inp.live), &mut g1);
+                    bb(&g1);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O1_RED",
+            cfg.time(
+                "fs_o1_red",
+                || {
+                    route_f::fs_o1_reduce(bb(&g1r), &mut o1);
+                    bb(&o1);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O2_CELL",
+            cfg.time(
+                "fs_o2_cell",
+                || {
+                    route_f::fs_o2_cell(bb(&bound), bb(&inp.t), bb(inp.dem), &mut ge_c);
+                    bb(&ge_c);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O2_RED",
+            cfg.time(
+                "fs_o2_red",
+                || {
+                    let a = route_f::fs_o2_reduce(bb(&ge_r), bb(inp.dem));
+                    bb(a);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O3_CELL",
+            cfg.time(
+                "fs_o3_cell",
+                || {
+                    route_f::fs_o3_cell(bb(&bound), bb(inp.dem), &mut g3);
+                    bb(&g3);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O3_RED",
+            cfg.time(
+                "fs_o3_red",
+                || {
+                    route_f::fs_o3_reduce(bb(&g3r), bb(&bound), bb(inp.dem), &mut o3);
+                    bb(&o3);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O4_CELL",
+            cfg.time(
+                "fs_o4_cell",
+                || {
+                    route_f::fs_o4_cell(bb(&inp.src.cost), bb(&inp.w), &mut lo_c, &mut hi_c);
+                    bb(&lo_c);
+                    bb(&hi_c);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O4_RED",
+            cfg.time(
+                "fs_o4_red",
+                || {
+                    route_f::fs_o4_reduce(bb(&lo_r), bb(&hi_r), bb(&inp.w), bb(inp.live), &mut o4);
+                    bb(&o4);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O6_CELL",
+            cfg.time(
+                "fs_o6_cell",
+                || {
+                    route_f::fs_o6_cell(bb(&bound), bb(&inp.params), &mut g6);
+                    bb(&g6);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O6_CELL_COORD",
+            cfg.time(
+                "fs_o6_cell_coord",
+                || {
+                    route_f::fs_o6_cell_coord(bb(&bound), bb(&inp.params), &mut g6c);
+                    bb(&g6c);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O6_RED",
+            cfg.time(
+                "fs_o6_red",
+                || {
+                    route_f::fs_o6_reduce(bb(&g6r), bb(&bound), bb(&inp.params), cap0, &mut o6);
+                    bb(&o6);
+                },
+                || {},
+            ),
+        ),
+        (
+            "FS_O6_RED_LUT",
+            cfg.time(
+                "fs_o6_red_lut",
+                || {
+                    let c0 = lut
+                        .cap0(bb(&inp.src.staff), u32::from(bb(inp.params.u)))
+                        .expect("lut");
+                    route_f::fs_o6_reduce(bb(&g6r), bb(&bound), bb(&inp.params), c0, &mut o6);
+                    bb(&o6);
+                },
+                || {},
+            ),
+        ),
+        (
+            "LUT_PREP",
+            cfg.time(
+                "lut_prep",
+                || {
+                    let l = route_f::CapLut::prepare(u32::from(bb(inp.params.u)));
+                    bb(&l);
+                },
+                || {},
+            ),
+        ),
+    ];
+    for (name, st) in e_rows
+        .into_iter()
+        .chain(iso_rows)
+        .chain(fs_rows)
+        .chain(fixed)
+    {
         println!(
             "{name} - - Fixed {:.1} {:.1} {:.1} {:.3} {}",
             st.median,

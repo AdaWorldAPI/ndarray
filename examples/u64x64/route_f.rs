@@ -16,7 +16,7 @@ use crate::fixture::*;
 use crate::harness::Class;
 use crate::route_c::{self, join, lane16, quot8, widen_u8, P16};
 use crate::{Entry, Kernel};
-use ndarray::simd::{U16x32, U8x64};
+use ndarray::simd::{U16x32, U64x8, U8x64};
 
 /// One Y row of the grid: 64 X cells as two `U16x32` halves.
 pub(crate) type Row = P16;
@@ -319,6 +319,509 @@ pub fn u64x64_o6_f_coord(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
     o6_finish(src, staff_raw, acc, out);
 }
 
+// ---- separated cell evaluation (D-U64X64-SHADER-F-0) ----
+//
+// Each op is a `cell` pass that writes a caller-owned grid and a `reduce`
+// pass that folds it. Arithmetic is copied from route C; only the split
+// is new.
+
+/// Copy of route C's private `carry_after`: carry out of `low + p = sum`.
+#[inline(always)]
+fn carry_after(low: U16x32, p: U16x32, sum: U16x32) -> U16x32 {
+    ((low & p) | ((low | p) & !sum)).shr(15)
+}
+
+/// Copy of route C's private `ones16`: row mask -> 1 / 0 per u16 lane.
+#[inline(always)]
+fn ones16(m: u64) -> P16 {
+    widen_u8(U8x64::mask_blend(m, U8x64::splat(0), U8x64::splat(1)))
+}
+
+/// Copy of route C's private `Col16`: `low + 2^16 * high` per lane.
+#[derive(Clone, Copy)]
+struct Col16 {
+    low: U16x32,
+    high: U16x32,
+}
+
+impl Col16 {
+    #[inline(always)]
+    fn zero() -> Self {
+        Col16 {
+            low: U16x32::zero(),
+            high: U16x32::zero(),
+        }
+    }
+
+    #[inline(always)]
+    fn add(&mut self, p: U16x32) {
+        let sum = self.low + p;
+        self.high += carry_after(self.low, p, sum);
+        self.low = sum;
+    }
+}
+
+// ---- O1 ----
+
+/// O1 cell: `I[y] = A[y] & B[y] & live`.
+#[inline(always)]
+pub(crate) fn fs_o1_cell(a: &BitTile, b: &BitTile, live: u64, grid: &mut BitTile) {
+    let lv = U64x8::splat(live);
+    for g in 0..8 {
+        let x = U64x8::from_slice(&a[g * 8..g * 8 + 8]) & U64x8::from_slice(&b[g * 8..g * 8 + 8]) & lv;
+        x.copy_to_slice(&mut grid[g * 8..g * 8 + 8]);
+    }
+}
+
+/// O1 reduction: per-y popcount, per-x vertical count, total.
+#[inline(always)]
+pub(crate) fn fs_o1_reduce(grid: &BitTile, out: &mut O1Out) {
+    let zero = U8x64::splat(0);
+    let one = U8x64::splat(1);
+    let mut acc = U8x64::splat(0);
+    let mut total = 0u64;
+    for g in 0..8 {
+        let x = U64x8::from_slice(&grid[g * 8..g * 8 + 8]);
+        let pc = x.popcnt();
+        total += pc.reduce_sum();
+        let pca = pc.to_array();
+        let xa = x.to_array();
+        for i in 0..8 {
+            out.plane_cnt[g * 8 + i] = pca[i] as u8;
+            acc = acc + U8x64::mask_blend(xa[i], zero, one);
+        }
+    }
+    acc.copy_to_slice(&mut out.row_cnt);
+    out.total = total as u16;
+}
+
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o1_fs(a: &BitTile, b: &BitTile, live: u64, out: &mut O1Out) {
+    let mut grid: BitTile = [0; 64];
+    fs_o1_cell(a, b, live, &mut grid);
+    fs_o1_reduce(&grid, out);
+}
+
+// ---- O2 ----
+
+/// O2 cell: `ge[y] = !(t[y] > S[y])` for demanded y; `t > 65535` never.
+/// Rows not demanded are not written.
+#[inline(always)]
+pub(crate) fn fs_o2_cell(bound: &Bound<'_>, t: &[u32; 64], dem: u64, ge: &mut [u64; 64]) {
+    let mut dm = dem;
+    while dm != 0 {
+        let y = dm.trailing_zeros() as usize;
+        dm &= dm - 1;
+        let tk = t[y];
+        ge[y] = if tk > 65535 {
+            0
+        } else {
+            let tv = U16x32::splat(tk as u16);
+            let v = route_c::load16(&bound.src.stock[y]);
+            !join(tv.cmpgt_mask(v[0]), tv.cmpgt_mask(v[1]))
+        };
+    }
+}
+
+/// O2 reduction: AND over the demanded rows; `u64::MAX` when none.
+#[inline(always)]
+pub(crate) fn fs_o2_reduce(ge: &[u64; 64], dem: u64) -> u64 {
+    let mut all = u64::MAX;
+    let mut dm = dem;
+    while dm != 0 {
+        let y = dm.trailing_zeros() as usize;
+        dm &= dm - 1;
+        all &= ge[y];
+    }
+    all
+}
+
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o2_fs(bound: &Bound<'_>, t: &[u32; 64], demanded: u64, out: &mut O2Out) {
+    out.ge = [0; 64];
+    fs_o2_cell(bound, t, demanded, &mut out.ge);
+    out.all_ge = fs_o2_reduce(&out.ge, demanded);
+}
+
+// ---- O3 ----
+
+/// O3 cell: `grid[y] = S[y] | !lane16(P[y])` for demanded y only.
+#[inline(always)]
+pub(crate) fn fs_o3_cell(bound: &Bound<'_>, dem: u64, grid: &mut ValueTile<u16>) {
+    let src = bound.src;
+    let mut dm = dem;
+    while dm != 0 {
+        let y = dm.trailing_zeros() as usize;
+        dm &= dm - 1;
+        let pm = lane16(src.present[y]);
+        let v = route_c::load16(&src.stock[y]);
+        let vs: P16 = [v[0] | !pm[0], v[1] | !pm[1]];
+        vs[0].copy_to_slice(&mut grid[y][..32]);
+        vs[1].copy_to_slice(&mut grid[y][32..]);
+    }
+}
+
+/// O3 reduction: running min / arg over the cell grid. `have` and `unknown`
+/// read the presence words again; that is the stated dependency.
+#[inline(always)]
+pub(crate) fn fs_o3_reduce(grid: &ValueTile<u16>, bound: &Bound<'_>, dem: u64, out: &mut O3Out) {
+    let src = bound.src;
+    let ff = U16x32::splat(0xFFFF);
+    let mut m: P16 = [ff, ff];
+    let mut arg = U8x64::splat(0xFF);
+    let mut have = 0u64;
+    let mut unknown = 0u64;
+    let mut dm = dem;
+    while dm != 0 {
+        let y = dm.trailing_zeros() as usize;
+        dm &= dm - 1;
+        let p = src.present[y];
+        unknown |= !p;
+        let vs = route_c::load16(&grid[y]);
+        // F5: only a strictly smaller value moves arg.
+        let lt = join(m[0].cmpgt_mask(vs[0]), m[1].cmpgt_mask(vs[1]));
+        let upd = lt | (p & !have);
+        arg = U8x64::mask_blend(upd, arg, U8x64::splat(y as u8));
+        have |= p;
+        m = [m[0].simd_min(vs[0]), m[1].simd_min(vs[1])];
+    }
+    let hm = lane16(have);
+    (m[0] & hm[0]).copy_to_slice(&mut out.min[..32]);
+    (m[1] & hm[1]).copy_to_slice(&mut out.min[32..]);
+    arg.copy_to_slice(&mut out.arg);
+    out.none = !have;
+    out.unknown = unknown;
+}
+
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o3_fs(bound: &Bound<'_>, demanded: u64, out: &mut O3Out) {
+    let mut grid: ValueTile<u16> = [[0; 64]; 64];
+    fs_o3_cell(bound, demanded, &mut grid);
+    fs_o3_reduce(&grid, bound, demanded, out);
+}
+
+// ---- O4 ----
+
+/// O4 cell: for each y with `w[y] != 0`, `lo[y] = C[y] * (w & 0xFF)` and, when
+/// `w >> 8 != 0`, `hi[y] = C[y] * (w >> 8)` (each product <= 255*255).
+#[inline(always)]
+pub(crate) fn fs_o4_cell(cost: &ValueTile<u8>, w: &[u16; 64], lo: &mut ValueTile<u16>, hi: &mut ValueTile<u16>) {
+    for y in 0..64 {
+        let wk = w[y];
+        if wk == 0 {
+            continue;
+        }
+        let c = widen_u8(U8x64::from_slice(&cost[y]));
+        let wl = U16x32::splat(wk & 0xFF);
+        c[0].mullo(wl).copy_to_slice(&mut lo[y][..32]);
+        c[1].mullo(wl).copy_to_slice(&mut lo[y][32..]);
+        if wk >> 8 != 0 {
+            let wh = U16x32::splat(wk >> 8);
+            c[0].mullo(wh).copy_to_slice(&mut hi[y][..32]);
+            c[1].mullo(wh).copy_to_slice(&mut hi[y][32..]);
+        }
+    }
+}
+
+/// O4 reduction: `Col16` carry sums over y, then the u32 finish.
+#[inline(always)]
+pub(crate) fn fs_o4_reduce(lo: &ValueTile<u16>, hi: &ValueTile<u16>, w: &[u16; 64], live: u64, out: &mut O4Out) {
+    let mut lc = [Col16::zero(), Col16::zero()];
+    let mut hc = [Col16::zero(), Col16::zero()];
+    for y in 0..64 {
+        let wk = w[y];
+        if wk == 0 {
+            continue;
+        }
+        let l = route_c::load16(&lo[y]);
+        for h in 0..2 {
+            lc[h].add(l[h]);
+        }
+        if wk >> 8 != 0 {
+            let u = route_c::load16(&hi[y]);
+            for h in 0..2 {
+                hc[h].add(u[h]);
+            }
+        }
+    }
+    let mut total = 0u64;
+    for h in 0..2 {
+        let ll = lc[h].low.to_array();
+        let lh = lc[h].high.to_array();
+        let hl = hc[h].low.to_array();
+        let hh = hc[h].high.to_array();
+        for i in 0..32 {
+            let r = h * 32 + i;
+            let a = (ll[i] as u32).wrapping_add((lh[i] as u32) << 16);
+            let b = (hl[i] as u32).wrapping_add((hh[i] as u32) << 16);
+            let s = a.wrapping_add(b << 8);
+            out.sum[r] = s;
+            if (live >> r) & 1 == 1 {
+                total += s as u64;
+            }
+        }
+    }
+    out.total = total;
+}
+
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o4_fs(cost: &ValueTile<u8>, w: &[u16; 64], live: u64, out: &mut O4Out) {
+    let mut lo: ValueTile<u16> = [[0; 64]; 64];
+    let mut hi: ValueTile<u16> = [[0; 64]; 64];
+    fs_o4_cell(cost, w, &mut lo, &mut hi);
+    fs_o4_reduce(&lo, &hi, w, live, out);
+}
+
+// ---- O5 ----
+
+/// O5 cell: `sum = row + (ones(m) << b)`; returns the carry-lane mask.
+#[inline(always)]
+pub(crate) fn fs_o5_cell(row: &[u16; 64], b: u32, m: u64, sum: &mut [u16; 64]) -> u64 {
+    let cnt = route_c::load16(row);
+    let ones = ones16(m);
+    let inc: P16 = [ones[0].shl(b), ones[1].shl(b)];
+    let s: P16 = [cnt[0] + inc[0], cnt[1] + inc[1]];
+    let one = U16x32::splat(1);
+    let lanes =
+        join(carry_after(cnt[0], inc[0], s[0]).cmpeq_mask(one), carry_after(cnt[1], inc[1], s[1]).cmpeq_mask(one));
+    s[0].copy_to_slice(&mut sum[..32]);
+    s[1].copy_to_slice(&mut sum[32..]);
+    lanes
+}
+
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o5_fs(counters: &mut Counters, u: O5Update) -> Result<(), Refusal> {
+    if u.b >= 16 {
+        return Err(Refusal::SignificanceOutOfRange);
+    }
+    let k = u.k as usize;
+    let mut sum = [0u16; 64];
+    let lanes = fs_o5_cell(&counters[k], u.b as u32, u.m, &mut sum);
+    if lanes != 0 {
+        return Err(Refusal::Overflow { lanes });
+    }
+    // F6: write back only if no lane carries.
+    counters[k] = sum;
+    Ok(())
+}
+
+// ---- O6 ----
+
+/// Initial cap `min(staff * u, QMAX)` by C's `mullo` + `simd_min`.
+#[inline(always)]
+pub(crate) fn fs_o6_cap0(bound: &Bound<'_>, params: &Params) -> P16 {
+    let staff = widen_u8(U8x64::from_slice(&bound.src.staff));
+    let uv = U16x32::splat(params.u as u16);
+    let raw: P16 = [staff[0].mullo(uv), staff[1].mullo(uv)];
+    let qmax = U16x32::splat(QMAX as u16);
+    [raw[0].simd_min(qmax), raw[1].simd_min(qmax)]
+}
+
+/// O6 cell: `grid[y] = quot8(S[y], d[y])` for demanded y only.
+#[inline(always)]
+pub(crate) fn fs_o6_cell(bound: &Bound<'_>, params: &Params, grid: &mut ValueTile<u16>) {
+    let src = bound.src;
+    let mut dm = params.recipe.demanded();
+    while dm != 0 {
+        let y = dm.trailing_zeros() as usize;
+        dm &= dm - 1;
+        let s = route_c::load16(&src.stock[y]);
+        let q = quot8(&s, U16x32::splat(params.recipe.d[y]));
+        q[0].copy_to_slice(&mut grid[y][..32]);
+        q[1].copy_to_slice(&mut grid[y][32..]);
+    }
+}
+
+/// O6 cell with the per-y class: a power-of-two `d` takes `min(s >> p, 255)`,
+/// anything else takes `quot8` (as `O6CoordSh`).
+#[inline(always)]
+pub(crate) fn fs_o6_cell_coord(bound: &Bound<'_>, params: &Params, grid: &mut ValueTile<u16>) {
+    let src = bound.src;
+    let mut dm = params.recipe.demanded();
+    while dm != 0 {
+        let y = dm.trailing_zeros() as usize;
+        dm &= dm - 1;
+        let s = route_c::load16(&src.stock[y]);
+        let dy = params.recipe.d[y];
+        let q = if dy.is_power_of_two() {
+            // F3: only a power of two takes the shift path.
+            let sh = dy.trailing_zeros();
+            let m = U16x32::splat(255);
+            [s[0].shr(sh).simd_min(m), s[1].shr(sh).simd_min(m)]
+        } else {
+            quot8(&s, U16x32::splat(dy))
+        };
+        q[0].copy_to_slice(&mut grid[y][..32]);
+        q[1].copy_to_slice(&mut grid[y][32..]);
+    }
+}
+
+/// O6 reduction: running cap with the limit tie rule, presence fold, finish.
+/// `staff_raw` is recomputed here for the STAFF test.
+#[inline(always)]
+pub(crate) fn fs_o6_reduce(grid: &ValueTile<u16>, bound: &Bound<'_>, params: &Params, cap0: P16, out: &mut O6Out) {
+    let src = bound.src;
+    let staff = widen_u8(U8x64::from_slice(&src.staff));
+    let uv = U16x32::splat(params.u as u16);
+    let staff_raw: P16 = [staff[0].mullo(uv), staff[1].mullo(uv)];
+    let mut cap = cap0;
+    let mut missing = 0u64;
+    let mut first_miss = U8x64::splat(0);
+    let mut lim = U8x64::splat(0);
+    let mut limset = 0u64;
+    let mut dm = params.recipe.demanded();
+    while dm != 0 {
+        let y = dm.trailing_zeros() as usize;
+        dm &= dm - 1;
+        let p = src.present[y];
+        let newm = !p & !missing;
+        first_miss = U8x64::mask_blend(newm, first_miss, U8x64::splat(y as u8));
+        missing |= !p;
+        let q = route_c::load16(&grid[y]);
+        let lt = join(cap[0].cmpgt_mask(q[0]), cap[1].cmpgt_mask(q[1]));
+        let eq = join(cap[0].cmpeq_mask(q[0]), cap[1].cmpeq_mask(q[1]));
+        let upd = lt | (eq & !limset);
+        lim = U8x64::mask_blend(upd, lim, U8x64::splat(y as u8));
+        limset |= upd;
+        cap = [cap[0].simd_min(q[0]), cap[1].simd_min(q[1])];
+    }
+    o6_finish(src, staff_raw, (cap, missing, first_miss, lim, limset), out);
+}
+
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o6_fs(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
+    let mut grid: ValueTile<u16> = [[0; 64]; 64];
+    fs_o6_cell(bound, params, &mut grid);
+    let cap0 = fs_o6_cap0(bound, params);
+    fs_o6_reduce(&grid, bound, params, cap0, out);
+}
+
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o6_fs_coord(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
+    let mut grid: ValueTile<u16> = [[0; 64]; 64];
+    fs_o6_cell_coord(bound, params, &mut grid);
+    let cap0 = fs_o6_cap0(bound, params);
+    fs_o6_reduce(&grid, bound, params, cap0, out);
+}
+
+/// A table of `min(s * u, QMAX)` for every staff byte, prepared for one `u`.
+pub(crate) struct CapLut {
+    u: u32,
+    table: [u8; 256],
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum LutRefusal {
+    ParamMismatch { prepared: u32, asked: u32 },
+}
+
+impl CapLut {
+    pub(crate) fn prepare(u: u32) -> CapLut {
+        let mut table = [0u8; 256];
+        for s in 0..256usize {
+            table[s] = (s as u32 * u).min(QMAX) as u8;
+        }
+        CapLut { u, table }
+    }
+
+    pub(crate) fn cap0(&self, staff: &[u8; 64], u: u32) -> Result<P16, LutRefusal> {
+        // F4: a table prepared for one u is never used for another.
+        if u != self.u {
+            return Err(LutRefusal::ParamMismatch {
+                prepared: self.u,
+                asked: u,
+            });
+        }
+        let mut c8 = [0u8; 64];
+        ndarray::simd::lut_u8(staff, &self.table, &mut c8);
+        Ok(widen_u8(U8x64::from_slice(&c8)))
+    }
+}
+
+#[no_mangle]
+#[inline(never)]
+pub fn u64x64_o6_fs_lut(bound: &Bound<'_>, params: &Params, out: &mut O6Out) {
+    let mut grid: ValueTile<u16> = [[0; 64]; 64];
+    fs_o6_cell(bound, params, &mut grid);
+    let lut = CapLut::prepare(params.u as u32);
+    let cap0 = lut
+        .cap0(&bound.src.staff, params.u as u32)
+        .expect("lut prepared for this u");
+    fs_o6_reduce(&grid, bound, params, cap0, out);
+}
+
+#[cfg(test)]
+mod split_tests {
+    use super::*;
+
+    #[test]
+    fn cap_lut_equals_mullo_min_for_every_u_and_staff() {
+        for u in 1..=255u32 {
+            let lut = CapLut::prepare(u);
+            for s in 0..256u32 {
+                assert_eq!(lut.table[s as usize] as u32, (s * u).min(128), "u={u} s={s}");
+            }
+        }
+    }
+
+    #[test]
+    fn cap_lut_prepared_for_one_u_refuses_another() {
+        let lut = CapLut::prepare(3);
+        assert_eq!(lut.cap0(&[1; 64], 4).err(), Some(LutRefusal::ParamMismatch { prepared: 3, asked: 4 }));
+        assert!(lut.cap0(&[1; 64], 3).is_ok());
+    }
+
+    const SENT: u16 = 0xA5A5;
+    const DEM: [usize; 3] = [3, 17, 40];
+
+    fn dem_mask() -> u64 {
+        DEM.iter().fold(0u64, |m, &y| m | (1u64 << y))
+    }
+
+    #[test]
+    fn split_cell_writes_only_demanded_rows() {
+        let src = random_source(11);
+        let bound = bind(&src, &Expect::of(&src)).expect("source binds");
+        let recipe = Recipe::from_pairs(&[(3, 2), (17, 3), (40, 1)]).unwrap();
+        let params = Params::new(recipe, 2, 10, [0; 64]).unwrap();
+        assert_eq!(recipe.demanded(), dem_mask());
+
+        let mut grid: ValueTile<u16> = [[SENT; 64]; 64];
+        fs_o6_cell(&bound, &params, &mut grid);
+        for y in 0..64 {
+            if DEM.contains(&y) {
+                for r in 0..64 {
+                    let want = (src.stock[y][r] / recipe.d[y]).min(255);
+                    assert_eq!(grid[y][r], want, "o6 y={y} r={r}");
+                }
+            } else {
+                assert!(grid[y].iter().all(|&v| v == SENT), "o6 row {y} was written");
+            }
+        }
+
+        let mut grid: ValueTile<u16> = [[SENT; 64]; 64];
+        fs_o3_cell(&bound, dem_mask(), &mut grid);
+        for y in 0..64 {
+            if DEM.contains(&y) {
+                for r in 0..64 {
+                    let absent = (src.present[y] >> r) & 1 == 0;
+                    let want = if absent { 0xFFFF } else { src.stock[y][r] };
+                    assert_eq!(grid[y][r], want, "o3 y={y} r={r}");
+                }
+            } else {
+                assert!(grid[y].iter().all(|&v| v == SENT), "o3 row {y} was written");
+            }
+        }
+    }
+}
+
 // ---- entries ----
 
 pub fn entries() -> Vec<Entry> {
@@ -335,5 +838,13 @@ pub fn entries() -> Vec<Entry> {
         e("O6", "", Kernel::O6(u64x64_o6_f)),
         e("O6", "lut", Kernel::O6(u64x64_o6_f_lut)),
         e("O6", "coord", Kernel::O6(u64x64_o6_f_coord)),
+        e("O1", "split", Kernel::O1(u64x64_o1_fs)),
+        e("O2", "split", Kernel::O2(u64x64_o2_fs)),
+        e("O3", "split", Kernel::O3(u64x64_o3_fs)),
+        e("O4", "split", Kernel::O4(u64x64_o4_fs)),
+        e("O5", "split", Kernel::O5(u64x64_o5_fs)),
+        e("O6", "split", Kernel::O6(u64x64_o6_fs)),
+        e("O6", "split_coord", Kernel::O6(u64x64_o6_fs_coord)),
+        e("O6", "split_lut", Kernel::O6(u64x64_o6_fs_lut)),
     ]
 }

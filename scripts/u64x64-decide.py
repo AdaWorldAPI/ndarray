@@ -37,7 +37,7 @@ if 'E_PREP_E2' in fixed:
         ents={k:v for k,v in rows.items() if k[0]==op and k[1]!='a0'}
         r=min(ents,key=lambda k:st.median(ents[k])); R=ents[r]
         out=[]; nstar=None
-        for n in (1,8,128,1024):
+        for n in (1,2,8,32,128,1024):
             W=[amort(P[i],fixed[qrow][i],fixed[hit][i],n) for i in range(len(P))]
             ok=max(W)<min(R) and st.median(W)<=0.85*st.median(R)
             out.append(f"N={n}: {st.median(W):.1f}{' PASS' if ok else ''}")
@@ -75,3 +75,22 @@ for case in ('POW2', 'GEN'):
     else:
         v = 'CONTRACT-COST' if mf > mc else 'F-FASTER'
     print(f"ISO {case:4} F-coord {mf:.1f} [{min(f):.1f}..{max(f):.1f}] vs C {mc:.1f} [{min(c):.1f}..{max(c):.1f}]  {mf/mc:.2f}  {v}")
+
+# Split O6 with a prepared cap LUT (plan section 14.4): the LUT is prepared
+# once and the cell + reduction run per query; against the best unprepared O6.
+if all(k in fixed for k in ('LUT_PREP', 'FS_O6_CELL', 'FS_O6_RED_LUT')):
+    P, Cc, Rr = fixed['LUT_PREP'], fixed['FS_O6_CELL'], fixed['FS_O6_RED_LUT']
+    ents = {k: v for k, v in rows.items() if k[0] == 'O6' and k[1] != 'a0'}
+    r = min(ents, key=lambda k: st.median(ents[k])); R = ents[r]
+    out = []; nstar = None
+    for n in (1, 2, 8, 32, 128, 1024):
+        W = [(P[i] + n * (Cc[i] + Rr[i])) / n for i in range(len(P))]
+        ok = max(W) < min(R) and st.median(W) <= 0.85 * st.median(R)
+        out.append(f"N={n}: {st.median(W):.1f}{' PASS' if ok else ''}")
+        if ok and nstar is None: nstar = n
+    print(f"O6 split+LUT (cell+red, LUT once)  vs {r[1]}/{r[2]} {st.median(R):.1f}: " + "  ".join(out) + f"  -> {'WINS from N=' + str(nstar) if nstar else 'never (N<=1024)'}")
+# Phase split for every op that has both rows: cell, reduction, sum.
+for op in ('O1', 'O2', 'O3', 'O4', 'O6'):
+    c, r = fixed.get(f'FS_{op}_CELL'), fixed.get(f'FS_{op}_RED')
+    if c and r:
+        print(f"PHASES {op}: cell {st.median(c):.1f}  reduce {st.median(r):.1f}  sum {st.median(c)+st.median(r):.1f}")
