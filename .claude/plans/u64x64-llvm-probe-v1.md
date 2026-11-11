@@ -906,3 +906,42 @@ route.
 
 **R5** is filed separately as lance-graph #1998, with a red-first test on
 branch `ccr-8062bcc7-l7lkz9-r5-mapframe`.
+
+## 16. D-QUOT8-ADMISSION-0: does the power-of-two quotient earn admission? (2026-11-11)
+
+**Question (operator):** does the per-row power-of-two specialization that
+route F measured (§15) give a measurable end-to-end benefit for Foundry G1's
+actual recipe populations and workloads? Route F's design is not reopened.
+
+**G1 vs G6.** G1 is capacity (`NetworkCapacity`, per-store max, the
+min/argmin limiting resource). G6 is `CanCook(q)` executed from a registered
+`MethodRef`. In lance-graph's `foundry-parity-lab` both execute as threshold
+sweeps: `arm_b::cook_ops` compares stock against `d·q` (`Pred::GeI32 { t: d *
+q }`), and `max_quantities` / `network_capacity` sweep q = 1..Q_MAX. **No
+quotient is evaluated on the executable path.** `S / d` occurs only in the
+oracle (`oracle.rs:62`) and the materialized null model (`arm_a.rs:75`).
+
+### 16.1 Counterfactual arms (lab only, `examples/u64x64`)
+
+- `c/pow2`: `u64x64_o6_c` with one change. Per demanded row y, a
+  power-of-two `d` takes `min(S >> p, 255)`; any other `d` takes `quot8`.
+  This is F-coord's selection inside C's own loop, with no shader dispatch.
+  Anchor F7.
+- `a/pow2`: `u64x64_o6_a` with the same per-row choice in the scalar
+  division (`s >> p` for a power of two, `s / d` otherwise). Anchor F8.
+- Both are registered entries, so `check` pins exact parity. Disable F7/F8
+  (test `d > 0` instead of `is_power_of_two`) must turn `check` red.
+
+### 16.2 Populations (never combined)
+
+- **Hypothetical sensitivity:** 8 demanded categories at
+  y ∈ {3, 11, 19, 27, 35, 43, 51, 59}. The first k rows take power-of-two
+  `d` from (1, 2, 4) cycling, the rest non-powers from (3, 5, 7) cycling,
+  for k = 0..8, i.e. 0%–100% in 12.5% steps. Rows `SENS_{C,CP,A,AP}_{k}`.
+- **Foundry fixture (synthetic):** the 8 menu items of
+  `foundry-parity-lab::fixture::recipe(m)`, demands mapped one to one (category
+  index, `d`). Rows `FND_{C,CP,A,AP}_{m}`. This is the only recipe population
+  that exists, and it is synthetic: PRODUCTION_DISTRIBUTION = UNKNOWN.
+
+Every timed closure consumes its output. Recipes are built outside the
+timer.
