@@ -18,11 +18,11 @@ use crate::{Entry, Kernel};
 use ndarray::simd::{U16x32, U64x8, U8x64};
 
 /// A 64-row plane as two `U16x32` halves.
-type P16 = [U16x32; 2];
+pub(crate) type P16 = [U16x32; 2];
 
 /// Join the two 32-row halves of a row mask.
 #[inline(always)]
-fn join(lo: u32, hi: u32) -> u64 {
+pub(crate) fn join(lo: u32, hi: u32) -> u64 {
     // C1: the high half must be shifted into rows 32..64.
     let m = lo as u64 | (hi as u64) << 32;
     m
@@ -35,18 +35,18 @@ fn carry_after(low: U16x32, p: U16x32, sum: U16x32) -> U16x32 {
 }
 
 #[inline(always)]
-fn load16(plane: &[u16; 64]) -> P16 {
+pub(crate) fn load16(plane: &[u16; 64]) -> P16 {
     [U16x32::from_slice(&plane[..32]), U16x32::from_slice(&plane[32..])]
 }
 
 #[inline(always)]
-fn widen_u8(v: U8x64) -> P16 {
+pub(crate) fn widen_u8(v: U8x64) -> P16 {
     [U16x32::from_u8x64_lo(v), U16x32::from_u8x64_hi(v)]
 }
 
 /// Row mask -> 0xFFFF / 0x0000 per u16 lane.
 #[inline(always)]
-fn lane16(m: u64) -> P16 {
+pub(crate) fn lane16(m: u64) -> P16 {
     let b = U8x64::mask_blend(m, U8x64::splat(0), U8x64::splat(0xFF));
     let lo = U16x32::from_u8x64_lo(b);
     let hi = U16x32::from_u8x64_hi(b);
@@ -275,7 +275,7 @@ pub fn u64x64_o5_c(counters: &mut Counters, u: O5Update) -> Result<(), Refusal> 
 /// and `cand <= 255`, so `cand * d` never wraps. A quotient of 256 or more
 /// saturates at 255, which is never equal to a cap (<= 128).
 #[inline(always)]
-fn quot8(s: &P16, d: U16x32) -> P16 {
+pub(crate) fn quot8(s: &P16, d: U16x32) -> P16 {
     let mut q: P16 = [U16x32::zero(), U16x32::zero()];
     for b in (0..8).rev() {
         let bit = U16x32::splat(1u16 << b);

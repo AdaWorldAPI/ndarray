@@ -11,7 +11,7 @@ for p in (1,2,3):
         if len(f)==9 and f[0].startswith('O'): rows[(f[0],f[1],f[2])].append(float(f[4]))
         elif len(f)==9 and f[3]=='Fixed': fixed.setdefault(f[0],[]).append(float(f[4]))
 def cls(op,route,var):
-    if route!='d': return {'c':'Simd','b':'Bitslice'}.get(route,'Scalar')
+    if route!='d': return {'c':'Simd','f':'Simd','b':'Bitslice'}.get(route,'Scalar')
     sym=f"u64x64_{'o6' if op=='O6c' else op.lower()}_d_{var}"
     v,s=insp[sym]; return 'Simd' if v>s else 'Scalar'
 for op in sorted({k[0] for k in rows}):
@@ -43,3 +43,19 @@ if 'E_PREP_E2' in fixed:
             out.append(f"N={n}: {st.median(W):.1f}{' PASS' if ok else ''}")
             if ok and nstar is None: nstar=n
         print(f"{name:30} vs {r[1]}/{r[2]} {st.median(R):.1f}: " + "  ".join(out) + f"  -> {'PREPARED-REUSE-WINS from N=' + str(nstar) if nstar else 'never (N<=1024)'}")
+
+# Route F against route C (plan section 13): both are Simd, so the rule above
+# never compares them. ZERO-COST iff the ranges overlap or F's median is within
+# 10% of C's; otherwise CONTRACT-COST (F slower) or F-FASTER.
+for op in sorted({k[0] for k in rows}):
+    c = rows.get((op, 'c', '-'))
+    for (o, rt, var), F in sorted(rows.items()):
+        if o != op or rt != 'f' or not c:
+            continue
+        mf, mc = st.median(F), st.median(c)
+        overlap = min(F) <= max(c) and min(c) <= max(F)
+        if overlap or mf <= 1.10 * mc and mc <= 1.10 * mf:
+            v = 'ZERO-COST'
+        else:
+            v = 'CONTRACT-COST' if mf > mc else 'F-FASTER'
+        print(f"{op:5} F/{var} {mf:.1f} [{min(F):.1f}..{max(F):.1f}] vs C {mc:.1f} [{min(c):.1f}..{max(c):.1f}]  {mf/mc:.2f}  {v}")

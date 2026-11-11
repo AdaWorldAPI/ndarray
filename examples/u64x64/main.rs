@@ -13,6 +13,7 @@ mod route_b;
 mod route_c;
 mod route_d;
 mod route_e;
+mod route_f;
 // Later routes are appended here by the orchestrator: `mod route_b;` ...
 
 use fixture::*;
@@ -44,6 +45,7 @@ pub struct Entry {
 fn all_entries() -> Vec<Entry> {
     let mut v = route_a::entries();
     v.extend(route_c::entries());
+    v.extend(route_f::entries());
     v.extend(route_d::entries());
     v.extend(route_b::entries());
     v.shrink_to_fit();
@@ -1095,7 +1097,57 @@ fn bench(scenario: &str) -> i32 {
             ),
         ),
     ];
-    for (name, st) in e_rows.into_iter().chain(fixed) {
+    let p_pow2 = Params::new(Recipe::from_pairs(&[(3, 1), (17, 2), (40, 4)]).expect("recipe"), 3, 2, [0u32; 64])
+        .expect("params");
+    let p_gen = Params::new(Recipe::from_pairs(&[(3, 3), (17, 5), (40, 7)]).expect("recipe"), 3, 2, [0u32; 64])
+        .expect("params");
+    let iso_rows: [(&str, harness::Stats); 4] = [
+        (
+            "ISO_POW2_C",
+            cfg.time(
+                "iso_pow2_c",
+                || {
+                    route_c::u64x64_o6_c(bb(&bound), bb(&p_pow2), &mut o6);
+                    bb(&o6);
+                },
+                || {},
+            ),
+        ),
+        (
+            "ISO_POW2_FCOORD",
+            cfg.time(
+                "iso_pow2_fcoord",
+                || {
+                    route_f::u64x64_o6_f_coord(bb(&bound), bb(&p_pow2), &mut o6);
+                    bb(&o6);
+                },
+                || {},
+            ),
+        ),
+        (
+            "ISO_GEN_C",
+            cfg.time(
+                "iso_gen_c",
+                || {
+                    route_c::u64x64_o6_c(bb(&bound), bb(&p_gen), &mut o6);
+                    bb(&o6);
+                },
+                || {},
+            ),
+        ),
+        (
+            "ISO_GEN_FCOORD",
+            cfg.time(
+                "iso_gen_fcoord",
+                || {
+                    route_f::u64x64_o6_f_coord(bb(&bound), bb(&p_gen), &mut o6);
+                    bb(&o6);
+                },
+                || {},
+            ),
+        ),
+    ];
+    for (name, st) in e_rows.into_iter().chain(iso_rows).chain(fixed) {
         println!(
             "{name} - - Fixed {:.1} {:.1} {:.1} {:.3} {}",
             st.median,
