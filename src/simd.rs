@@ -926,6 +926,9 @@ pub use crate::simd_masking_ops::{
     blend_i32_scalar,
     blend_i64,
     blend_i64_scalar,
+    // 2026-11-12: the position-form folds (D-DR-SELECT-K-SV): a borrowed
+    // `&[u32]` selection read as a bag, for selections sparse against the lane.
+    count_gt_i32_at,
     eq_f32_pair_to_mask,
     eq_f32_to_mask,
     eq_f64_to_mask,
@@ -1053,6 +1056,7 @@ pub use crate::simd_masking_ops::{
     not_nan_f64_to_mask,
     presence_nan_mismatches_f32,
     presence_nan_mismatches_f64,
+    sum_i32_at,
     ternary_match_strided16_to_mask,
     ternary_match_strided_to_mask,
     ternary_match_u32_to_mask,

@@ -45,6 +45,7 @@
 //! [`run`].
 
 use ndarray::simd::{
+    count_gt_i32_at, sum_i32_at,
     blend_i32, eq_f32_to_mask, eq_f64_to_mask, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask,
     eq_u32_to_mask, eq_u32_to_mask_under, eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_f32_to_mask,
     ge_f64_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_f32_to_mask,
@@ -65,7 +66,7 @@ use ndarray::simd::{
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 23;
+pub const CHECKS: usize = 24;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -81,7 +82,7 @@ pub fn run() -> u32 {
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
         check_mul_add_single_rounding, check_fixedpoint_requant, check_nan_presence_bijection,
-        check_sql_null_predicates, check_lut9, check_lut_u8,
+        check_sql_null_predicates, check_lut9, check_lut_u8, check_position_folds,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1253,6 +1254,55 @@ fn check_masked_reductions() -> Result<(), u32> {
                 .sum();
             if masked_strided_group_sum(&bytes, 4, 16, n, groups, group_bytes, m) != Some(want) {
                 return Err(0x840 | gk as u32);
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── 0x86x: position-form folds — a `&[u32]` selection read as a bag ─────────
+//
+// `sum_i32_at` / `count_gt_i32_at` against a row-at-a-time reference: a set
+// (sorted, duplicate-free; must equal the mask fold), the same set reversed
+// (order must not matter), a bag with every position doubled, and one
+// out-of-range position at the front, middle and end (must be `None`).
+fn check_position_folds() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x8000_0000_0086);
+    for &n in &LENS {
+        let vals = i32_values(n, &mut rng);
+        let set: Vec<u32> = (0..n as u32).filter(|_| rng.next() % 3 == 0).collect();
+        let reversed: Vec<u32> = set.iter().rev().copied().collect();
+        let doubled: Vec<u32> = set.iter().flat_map(|&p| [p, p]).collect();
+        let lists: [&[u32]; 3] = [&set, &reversed, &doubled];
+        for (k, list) in lists.iter().enumerate() {
+            let k = k as u32;
+            let want_sum = list
+                .iter()
+                .fold(0i64, |a, &p| a.wrapping_add(vals[p as usize] as i64));
+            if sum_i32_at(&vals, list) != Some(want_sum) {
+                return Err(0x860 | k);
+            }
+            for t in [i32::MIN, -1, 0, i32::MAX - 1, i32::MAX] {
+                let want = list.iter().filter(|&&p| vals[p as usize] > t).count() as u64;
+                if count_gt_i32_at(&vals, list, t) != Some(want) {
+                    return Err(0x864 | k);
+                }
+            }
+        }
+        // A set must agree with the mask form of the same selection.
+        let mut mask = vec![0u64; words_for(n)];
+        for &p in &set {
+            mask[p as usize / 64] |= 1u64 << (p % 64);
+        }
+        if sum_i32_at(&vals, &set) != Some(masked_sum_i32(&vals, &mask)) {
+            return Err(0x868);
+        }
+        // Out of range, at every place in the list.
+        for at in [0usize, set.len() / 2, set.len()] {
+            let mut bad = set.clone();
+            bad.insert(at, n as u32);
+            if sum_i32_at(&vals, &bad).is_some() || count_gt_i32_at(&vals, &bad, 0).is_some() {
+                return Err(0x869);
             }
         }
     }
