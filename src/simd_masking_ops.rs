@@ -763,6 +763,83 @@ pub fn mask_ternlog_any<const IMM: i32>(a: &[u64], b: &[u64], c: &[u64]) -> bool
     false
 }
 
+/// Sum of `values[p]` over a borrowed list of row positions, widened to `i64`.
+///
+/// `positions` is a selection in its position form: a list of row indexes
+/// into `values`, in any order. It is a bag, never a set: a position listed
+/// twice is added twice. This is the consumer for a selection that is sparse
+/// against its lane; [`masked_sum_i32`] visits every mask word whatever the
+/// selection size, and this visits only the listed rows.
+///
+/// Returns `None`, with nothing else observable, if any position is not below
+/// `values.len()`. An empty list sums to `Some(0)`.
+///
+/// # Overflow
+///
+/// Each element is widened to `i64` before it is added, and the accumulation
+/// is `wrapping_add`. A list of at most `2^32` positions cannot wrap; a longer
+/// one (which must repeat positions) can, and the result is then the wrapped
+/// two's-complement value.
+///
+/// # Vectorisation, honestly
+///
+/// A plain loop, the same body on every backend. The read is indexed by
+/// data, and no typed wrapper here carries an `i32` gather word; adding one
+/// is a separate, measured step.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::sum_i32_at;
+///
+/// let values = [10i32, 20, 30, 40];
+/// assert_eq!(sum_i32_at(&values, &[0, 2]), Some(40));
+/// assert_eq!(sum_i32_at(&values, &[3, 3]), Some(80)); // a bag
+/// assert_eq!(sum_i32_at(&values, &[4]), None); // out of range
+/// ```
+#[inline]
+pub fn sum_i32_at(values: &[i32], positions: &[u32]) -> Option<i64> {
+    let mut acc = 0i64;
+    for &p in positions {
+        acc = acc.wrapping_add(i64::from(*values.get(p as usize)?));
+    }
+    Some(acc)
+}
+
+/// Count of listed positions whose value is greater than `threshold` (signed).
+///
+/// The position-form sibling of [`gt_i32_to_mask`] followed by a population
+/// count. `positions` is a bag: a position listed twice is counted twice when
+/// its value passes. The comparison is strict and signed, so no value is
+/// greater than `i32::MAX`.
+///
+/// Returns `None` if any position is not below `values.len()`. An empty list
+/// counts `Some(0)`. The count cannot exceed `positions.len()`.
+///
+/// # Vectorisation, honestly
+///
+/// A plain loop, the same body on every backend, for the reason given on
+/// [`sum_i32_at`].
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::count_gt_i32_at;
+///
+/// let values = [10i32, 20, 30, 40];
+/// assert_eq!(count_gt_i32_at(&values, &[0, 1, 2, 3], 20), Some(2));
+/// assert_eq!(count_gt_i32_at(&values, &[3, 3], 20), Some(2)); // a bag
+/// assert_eq!(count_gt_i32_at(&values, &[9], 20), None); // out of range
+/// ```
+#[inline]
+pub fn count_gt_i32_at(values: &[i32], positions: &[u32], threshold: i32) -> Option<u64> {
+    let mut count = 0u64;
+    for &p in positions {
+        count += u64::from(*values.get(p as usize)? > threshold);
+    }
+    Some(count)
+}
+
 /// Sum of `values[i]` where mask bit `i` is set, widened to `i64`.
 ///
 /// Bit order is the module convention: element `i` is bit `i % 64` of
@@ -7653,6 +7730,91 @@ mod tests {
     fn masked_sum_i32_empty_mask_is_zero() {
         let values: Vec<i32> = (1..=100).collect();
         assert_eq!(masked_sum_i32(&values, &[0u64; 2]), 0, "no bits set ⇒ 0");
+    }
+
+    /// A sorted, duplicate-free position list is the same selection as its
+    /// mask, so both folds must equal the mask folds. FAILS IF `sum_i32_at`
+    /// or `count_gt_i32_at` reads a wrong row, skips one, or compares
+    /// unsigned or non-strictly.
+    #[test]
+    fn position_folds_equal_the_mask_folds_for_a_set() {
+        let mut state = 0x5EED_0000_0000_0011u64;
+        let mut next = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        for n in [1usize, 63, 64, 65, 130, 1000] {
+            let values: Vec<i32> = (0..n)
+                .map(|i| match i % 7 {
+                    0 => i32::MIN,
+                    1 => i32::MAX,
+                    _ => next() as i32,
+                })
+                .collect();
+            let words = n.div_ceil(64);
+            let mut mask = vec![0u64; words];
+            let mut positions = Vec::new();
+            for i in 0..n {
+                if next() % 3 == 0 {
+                    mask[i / 64] |= 1u64 << (i % 64);
+                    positions.push(i as u32);
+                }
+            }
+            assert_eq!(sum_i32_at(&values, &positions), Some(masked_sum_i32(&values, &mask)), "n={n}");
+            for t in [i32::MIN, -1, 0, 1, i32::MAX - 1, i32::MAX] {
+                let mut gt = vec![0u64; words];
+                gt_i32_to_mask(&values, t, &mut gt);
+                let want: u64 = gt
+                    .iter()
+                    .zip(&mask)
+                    .map(|(a, b)| u64::from((a & b).count_ones()))
+                    .sum();
+                assert_eq!(count_gt_i32_at(&values, &positions, t), Some(want), "n={n} t={t}");
+            }
+        }
+    }
+
+    /// A position list is a bag and need not be sorted: order does not change
+    /// either fold, and a repeated position counts once per occurrence. A mask
+    /// cannot express either, so this is the half the mask test cannot cover.
+    #[test]
+    fn position_folds_keep_order_free_bag_semantics() {
+        let values = [5i32, -7, 100, i32::MAX, i32::MIN, 0];
+        let sorted = [0u32, 2, 3, 5];
+        let shuffled = [5u32, 0, 3, 2];
+        assert_eq!(sum_i32_at(&values, &sorted), sum_i32_at(&values, &shuffled));
+        assert_eq!(count_gt_i32_at(&values, &sorted, 0), count_gt_i32_at(&values, &shuffled, 0));
+        assert_eq!(count_gt_i32_at(&values, &sorted, 0), Some(3));
+
+        // Three copies of one row: three times its value, counted three times.
+        assert_eq!(sum_i32_at(&values, &[2, 2, 2]), Some(300));
+        assert_eq!(count_gt_i32_at(&values, &[2, 2, 2], 99), Some(3));
+        assert_eq!(count_gt_i32_at(&values, &[2, 2, 2], 100), Some(0), "strict");
+
+        // Widening: two copies of i32::MAX do not wrap in i64.
+        assert_eq!(sum_i32_at(&values, &[3, 3]), Some(2 * i64::from(i32::MAX)));
+        assert_eq!(sum_i32_at(&values, &[4, 4]), Some(2 * i64::from(i32::MIN)));
+        // Nothing is greater than i32::MAX.
+        assert_eq!(count_gt_i32_at(&values, &[0, 1, 2, 3, 4, 5], i32::MAX), Some(0));
+    }
+
+    /// Out of range is `None`, wherever it sits in the list; the first
+    /// position past the end is `values.len()` itself. Empty is zero.
+    #[test]
+    fn position_folds_refuse_out_of_range_and_accept_empty() {
+        let values = [1i32, 2, 3];
+        assert_eq!(sum_i32_at(&values, &[]), Some(0));
+        assert_eq!(count_gt_i32_at(&values, &[], 0), Some(0));
+        assert_eq!(sum_i32_at(&[], &[]), Some(0));
+        assert_eq!(sum_i32_at(&values, &[2]), Some(3), "the last row is in range");
+        for bad in [[3u32, 0, 1], [0, 3, 1], [0, 1, 3], [0, 1, u32::MAX]] {
+            assert_eq!(sum_i32_at(&values, &bad), None, "{bad:?}");
+            assert_eq!(count_gt_i32_at(&values, &bad, 0), None, "{bad:?}");
+        }
+        assert_eq!(sum_i32_at(&[], &[0]), None);
     }
 
     /// End-to-end composition: the shape the ABI's fused plan runs — two
