@@ -45,7 +45,7 @@
 //! [`run`].
 
 use ndarray::simd::{
-    count_gt_i32_at, sum_i32_at,
+    count_gt_i32_at, count_set_at, sum_i32_at,
     blend_i32, eq_f32_to_mask, eq_f64_to_mask, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask,
     eq_u32_to_mask, eq_u32_to_mask_under, eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_f32_to_mask,
     ge_f64_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_f32_to_mask,
@@ -66,7 +66,7 @@ use ndarray::simd::{
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 24;
+pub const CHECKS: usize = 25;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -82,7 +82,7 @@ pub fn run() -> u32 {
         check_predicates_under, check_set_range, check_unsigned_compare_to_mask, check_gather_scatter_group,
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
         check_mul_add_single_rounding, check_fixedpoint_requant, check_nan_presence_bijection,
-        check_sql_null_predicates, check_lut9, check_lut_u8, check_position_folds,
+        check_sql_null_predicates, check_lut9, check_lut_u8, check_position_folds, check_count_set_at,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -1304,6 +1304,50 @@ fn check_position_folds() -> Result<(), u32> {
             if sum_i32_at(&vals, &bad).is_some() || count_gt_i32_at(&vals, &bad, 0).is_some() {
                 return Err(0x869);
             }
+        }
+    }
+    Ok(())
+}
+
+// ── 0x87x: `count_set_at` — a bag of positions counted against a row mask ───
+//
+// Against one `bool` per row: a set, its reverse, every position doubled; a
+// non-row position at the front, middle and end; a mask one word short and
+// one word long (all must be `None`).
+fn check_count_set_at() -> Result<(), u32> {
+    let mut rng = SplitMix64(0x8000_0000_0087);
+    for &n in &LENS {
+        let rows: Vec<bool> = (0..n).map(|_| rng.next() % 2 == 0).collect();
+        let mut bits = vec![0u64; words_for(n)];
+        for (i, &on) in rows.iter().enumerate() {
+            if on {
+                bits[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        let set: Vec<u32> = (0..n as u32).filter(|_| rng.next() % 3 == 0).collect();
+        let reversed: Vec<u32> = set.iter().rev().copied().collect();
+        let doubled: Vec<u32> = set.iter().flat_map(|&p| [p, p]).collect();
+        let lists: [&[u32]; 3] = [&set, &reversed, &doubled];
+        for (k, list) in lists.iter().enumerate() {
+            let want = list.iter().filter(|&&p| rows[p as usize]).count() as u64;
+            if count_set_at(&bits, n, list) != Some(want) {
+                return Err(0x870 | k as u32);
+            }
+        }
+        for at in [0usize, set.len() / 2, set.len()] {
+            let mut bad = set.clone();
+            bad.insert(at, n as u32);
+            if count_set_at(&bits, n, &bad).is_some() {
+                return Err(0x874);
+            }
+        }
+        let mut long = bits.clone();
+        long.push(0);
+        if count_set_at(&long, n, &set).is_some() {
+            return Err(0x875);
+        }
+        if !bits.is_empty() && count_set_at(&bits[..bits.len() - 1], n, &set).is_some() {
+            return Err(0x876);
         }
     }
     Ok(())

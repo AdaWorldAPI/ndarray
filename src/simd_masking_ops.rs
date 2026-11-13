@@ -880,8 +880,18 @@ pub fn count_gt_i32_at(values: &[i32], positions: &[u32], threshold: i32) -> Opt
 /// ```
 #[inline]
 pub fn count_set_at(bits: &[u64], n_rows: usize, positions: &[u32]) -> Option<u64> {
-    let _ = (bits, n_rows, positions);
-    Some(0)
+    if bits.len() != n_rows.div_ceil(64) {
+        return None;
+    }
+    let mut count = 0u64;
+    for &p in positions {
+        let p = p as usize;
+        if p >= n_rows {
+            return None;
+        }
+        count += (bits[p / 64] >> (p % 64)) & 1;
+    }
+    Some(count)
 }
 
 /// Sum of `values[i]` where mask bit `i` is set, widened to `i64`.
@@ -7923,11 +7933,7 @@ mod tests {
             for list in [&set, &reversed, &doubled] {
                 assert_eq!(count_set_at(&bits, n, list), count_set_reference(&rows, list), "n={n}");
             }
-            assert_eq!(
-                count_set_at(&bits, n, &doubled),
-                count_set_at(&bits, n, &set).map(|c| 2 * c),
-                "n={n}"
-            );
+            assert_eq!(count_set_at(&bits, n, &doubled), count_set_at(&bits, n, &set).map(|c| 2 * c), "n={n}");
             // Each single row, so every bit position of every word is read.
             for (i, &on) in rows.iter().enumerate() {
                 assert_eq!(count_set_at(&bits, n, &[i as u32]), Some(u64::from(on)), "n={n} i={i}");
