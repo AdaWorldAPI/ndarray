@@ -929,6 +929,8 @@ pub use crate::simd_masking_ops::{
     // 2026-11-12: the position-form folds (D-DR-SELECT-K-SV): a borrowed
     // `&[u32]` selection read as a bag, for selections sparse against the lane.
     count_gt_i32_at,
+    // 2026-11-13: the bag count over a row mask (D-VAS-R12, gate A).
+    count_set_at,
     eq_f32_pair_to_mask,
     eq_f32_to_mask,
     eq_f64_to_mask,

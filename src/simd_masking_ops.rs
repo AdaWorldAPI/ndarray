@@ -840,6 +840,50 @@ pub fn count_gt_i32_at(values: &[i32], positions: &[u32], threshold: i32) -> Opt
     Some(count)
 }
 
+/// Count of listed positions whose bit is set in a row mask.
+///
+/// `bits` is a mask over `n_rows` rows in the module convention: row `i` is
+/// bit `i % 64` of `bits[i / 64]` (LSB first). `positions` is a bag of rows:
+/// a position listed twice is counted twice when its bit is set, and the
+/// order of the list does not change the count. This is the position-form
+/// sibling of ANDing a selection mask with `bits` and counting, for a
+/// selection that repeats rows, which a mask cannot say.
+///
+/// Returns `None`, with nothing else observable, if
+///
+/// - `bits.len()` is not `n_rows.div_ceil(64)` (too short or too long), or
+/// - any position is not below `n_rows`, even where a mask word covers it.
+///
+/// Bits at or beyond `n_rows` in the last word are never read: no accepted
+/// position reaches them, so a dirty tail does not change the count and is
+/// not an error. An empty list counts `Some(0)`. The count cannot exceed
+/// `positions.len()`, so it cannot overflow.
+///
+/// Allocates nothing and copies nothing.
+///
+/// # Vectorisation, honestly
+///
+/// A plain loop, the same body on every backend, for the reason given on
+/// [`sum_i32_at`].
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::count_set_at;
+///
+/// // Rows 0, 1 and 3 of four are set.
+/// let bits = [0b1011u64];
+/// assert_eq!(count_set_at(&bits, 4, &[1, 1, 3]), Some(3)); // a bag
+/// assert_eq!(count_set_at(&bits, 4, &[2, 2]), Some(0));
+/// assert_eq!(count_set_at(&bits, 4, &[4]), None); // not a row
+/// assert_eq!(count_set_at(&bits, 65, &[0]), None); // mask of the wrong length
+/// ```
+#[inline]
+pub fn count_set_at(bits: &[u64], n_rows: usize, positions: &[u32]) -> Option<u64> {
+    let _ = (bits, n_rows, positions);
+    Some(0)
+}
+
 /// Sum of `values[i]` where mask bit `i` is set, widened to `i64`.
 ///
 /// Bit order is the module convention: element `i` is bit `i % 64` of
@@ -7815,6 +7859,111 @@ mod tests {
             assert_eq!(count_gt_i32_at(&values, &bad, 0), None, "{bad:?}");
         }
         assert_eq!(sum_i32_at(&[], &[0]), None);
+    }
+
+    /// Row-at-a-time reference for `count_set_at`: one `bool` per row, no
+    /// packed word, so it shares no bit arithmetic with the function.
+    fn count_set_reference(rows: &[bool], positions: &[u32]) -> Option<u64> {
+        let mut count = 0u64;
+        for &p in positions {
+            count += u64::from(*rows.get(p as usize)?);
+        }
+        Some(count)
+    }
+
+    fn pack_rows(rows: &[bool]) -> Vec<u64> {
+        let mut bits = vec![0u64; rows.len().div_ceil(64)];
+        for (i, &on) in rows.iter().enumerate() {
+            if on {
+                bits[i / 64] |= 1u64 << (i % 64);
+            }
+        }
+        bits
+    }
+
+    /// The four-row fixture: every row qualifies, then row 3 fails.
+    /// FAILS IF a repeated position is counted once, the order matters, or a
+    /// cleared bit is counted.
+    #[test]
+    fn count_set_at_weighs_each_occurrence_by_its_bit() {
+        let all = pack_rows(&[true, true, true, true]);
+        let no3 = pack_rows(&[true, true, true, false]);
+        let cases: [(&[u32], u64, u64); 4] = [(&[1, 1, 3], 3, 2), (&[1, 3, 1], 3, 2), (&[], 0, 0), (&[1, 1], 2, 2)];
+        for (positions, want_all, want_no3) in cases {
+            assert_eq!(count_set_at(&all, 4, positions), Some(want_all), "{positions:?}");
+            assert_eq!(count_set_at(&no3, 4, positions), Some(want_no3), "{positions:?}");
+        }
+        // A zero mask counts nothing; a full mask counts every occurrence.
+        assert_eq!(count_set_at(&[0u64], 4, &[0, 1, 1, 2, 3, 3, 3]), Some(0));
+        assert_eq!(count_set_at(&all, 4, &[0, 1, 1, 2, 3, 3, 3]), Some(7));
+        // Deduplicated, the same list gives the set count, so a kernel that
+        // builds a mask from the list fails the bag rows above.
+        assert_eq!(count_set_at(&all, 4, &[1, 3]), Some(2));
+    }
+
+    /// Against the row-at-a-time reference over word boundaries, with a set,
+    /// its reverse and every position doubled.
+    /// FAILS IF a bit is read from the wrong word or the wrong end of a word.
+    #[test]
+    fn count_set_at_matches_the_row_reference_across_word_boundaries() {
+        let mut state = 0x5EED_0000_0000_0012u64;
+        let mut next = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        for n in [1usize, 63, 64, 65, 127, 128, 129, 1000] {
+            let rows: Vec<bool> = (0..n).map(|_| next() % 2 == 0).collect();
+            let bits = pack_rows(&rows);
+            let set: Vec<u32> = (0..n as u32).filter(|_| next() % 3 != 0).collect();
+            let reversed: Vec<u32> = set.iter().rev().copied().collect();
+            let doubled: Vec<u32> = set.iter().flat_map(|&p| [p, p]).collect();
+            for list in [&set, &reversed, &doubled] {
+                assert_eq!(count_set_at(&bits, n, list), count_set_reference(&rows, list), "n={n}");
+            }
+            assert_eq!(
+                count_set_at(&bits, n, &doubled),
+                count_set_at(&bits, n, &set).map(|c| 2 * c),
+                "n={n}"
+            );
+            // Each single row, so every bit position of every word is read.
+            for (i, &on) in rows.iter().enumerate() {
+                assert_eq!(count_set_at(&bits, n, &[i as u32]), Some(u64::from(on)), "n={n} i={i}");
+            }
+        }
+    }
+
+    /// FAILS IF a position at or past `n_rows` is accepted because a mask
+    /// word happens to cover it, a mask of the wrong length is read, or a
+    /// dirty tail changes a count.
+    #[test]
+    fn count_set_at_refuses_non_rows_and_malformed_masks() {
+        // 65 rows: two words, 63 tail bits in the second.
+        let n = 65usize;
+        let mut bits = vec![u64::MAX, u64::MAX];
+        assert_eq!(count_set_at(&bits, n, &[0, 63, 64]), Some(3), "the last row is a row");
+        for bad in [[65u32, 0, 1], [0, 65, 1], [0, 1, 65], [0, 1, 127], [0, 1, u32::MAX]] {
+            assert_eq!(count_set_at(&bits, n, &bad), None, "{bad:?}: its tail bit is set, it is not a row");
+        }
+        // The tail is never read: clearing or setting it changes nothing.
+        let clean = count_set_at(&bits, n, &[64, 64, 3]);
+        bits[1] = 1;
+        assert_eq!(count_set_at(&bits, n, &[64, 64, 3]), clean);
+        assert_eq!(clean, Some(3));
+        // Mask length: exactly `n_rows.div_ceil(64)` words.
+        assert_eq!(count_set_at(&[u64::MAX], n, &[0]), None, "too short");
+        assert_eq!(count_set_at(&[u64::MAX; 3], n, &[0]), None, "too long");
+        assert_eq!(count_set_at(&[u64::MAX], 64, &[63]), Some(1));
+        assert_eq!(count_set_at(&[u64::MAX], 64, &[64]), None);
+        assert_eq!(count_set_at(&[u64::MAX, 0], 64, &[0]), None, "64 rows are one word");
+        // No rows: no words, and no position is a row.
+        assert_eq!(count_set_at(&[], 0, &[]), Some(0));
+        assert_eq!(count_set_at(&[], 0, &[0]), None);
+        assert_eq!(count_set_at(&[0], 0, &[]), None, "a word for no rows");
+        // A malformed mask is refused even for an empty list.
+        assert_eq!(count_set_at(&[], 4, &[]), None);
     }
 
     /// End-to-end composition: the shape the ABI's fused plan runs — two
