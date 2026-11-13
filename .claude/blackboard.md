@@ -4052,3 +4052,21 @@ laws, ExtentUnsupported, row bounds) and WITNESS in OrderedLaneWitness; no new t
 ### Haiku run log — QUOT8 bench wave (2026-11-11)
 - guarded-executor × bench/decide card: 1 run, COUNT bench=54 decide=18 (matched card), 0 wrong, 0 missed.
   Orchestrator regenerated all 18 decisions byte-identical. Result: plan §17 (NO GO, LAB ONLY).
+
+## 2026-11-13: `count_set_at` (D-VAS-R12, gate A)
+
+- Added `ndarray::simd::count_set_at(bits, n_rows, positions) -> Option<u64>`
+  in `src/simd_masking_ops.rs`, beside `count_gt_i32_at`: the number of listed
+  positions whose bit is set in an LSB-first row mask. A bag: a repeated
+  position counts once per occurrence. `None` for a mask whose length is not
+  `n_rows.div_ceil(64)` or a position not below `n_rows`. Tail bits are never
+  read. A plain loop on every backend; no speed claim, nothing measured.
+- Tests committed against a stub first (3 failed), then the body. Disable
+  runs, anchors asserted, exit 101 each: row bound, mask length, bit order.
+- Parity: group `0x87x` added (25 groups); `native` passes on the default
+  config (avx512f=true) and on `config-v3.toml` (avx512f=false). The cross
+  arms (neon, wasm, avx, v2, nightly) were not run here.
+- Haiku run: `harvest-scout`, call sites of `count_gt_i32_at` / `sum_i32_at`;
+  41 hits reported, 6 files; checked against my own grep of src/ and crates/:
+  0 wrong, 0 missed.
+- Consumer: lance-graph mask-risc `SelFold` (gate B), not started.
