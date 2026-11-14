@@ -1,3 +1,34 @@
+## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1, bit-plane refresh (per-bit addressing)
+
+Instead of walking set bits and gathering weight rows, transpose the weights
+into bit planes: `plane[b][k][j]` is a `u64` whose bit `r` is bit `b` of
+`w[k][r][j]` (two's complement `i16`, `b < 16`). Then
+`h[j] = bias[j] + Σ_{b<15} 2^b·n[b][j] − 2^15·n[15][j]`, with
+`n[b][j] = Σ_k popcount(tile[k] & plane[b][k][j])`. The tile bit is read in
+place as the address; no row is gathered. Planes are 131,072 B, the same
+bytes as the weights, transposed once per weight set (not timed).
+
+Routes, both over `U64x8` (8 output lanes `j` per vector), no zero-word skip,
+so the cost is independent of density:
+- G-P1 `nnue_refresh_planes`: `n += popcnt(splat(tile[k]) & plane)`.
+- G-P2 `nnue_refresh_abakus`: the Abakus column counter. Masks are added
+  into carry-save columns ones/twos/fours/eights/sixteens with the full-adder
+  law (`ternlog` 0x96 sum, 0xE8 carry: the carry moves to the adjacent
+  column), Harley-Seal over groups of 16 words; one popcount per column
+  at the end instead of one per word.
+
+Predictions:
+- R1 exact: both equal the per-cell oracle on every corpus (incl. weights
+  with the sign bit set, i.e. negative weights).
+- R2 G-P1 time is density-independent within 10% (empty vs full).
+- R3 AVX-512 (vpopcntdq): G-P1 half tile below 1,000 ns, faster than the
+  gather walk x1 (1,560 ns). Kill: G-P1 slower than x1 at half density.
+- R4 crossover: G-P1 loses to x1 at density 1/64 (54 set bits, ~60 ns).
+- R5 AVX-512: G-P2 no faster than G-P1 (vpopcntq is one instruction, so
+  saving popcounts buys nothing).
+- R6 AVX2 tier (config-v3, `U64x8::popcnt` is 8 scalar `count_ones`): G-P2
+  faster than G-P1. Kill: G-P2 slower than G-P1 on AVX2.
+
 ## 2026-11-14 — RESULT: multi-accumulator refresh (pre-registered below) — hypothesis FALSIFIED
 
 Same bench, four refresh variants interleaved per sample with a rotated
