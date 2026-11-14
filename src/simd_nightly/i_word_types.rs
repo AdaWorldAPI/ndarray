@@ -589,6 +589,25 @@ impl I32x16 {
         self.0.simd_gt(other.0).to_bitmask() as u16
     }
 
+    /// Per-lane select by a 16-bit mask: lane `i` of the result is `b`'s lane
+    /// `i` when bit `i` of `mask` is set (LSB-first, lane 0 is bit 0), and
+    /// `a`'s lane `i` otherwise. The chosen lane is copied bit for bit.
+    ///
+    /// Same argument order as `U8x64::mask_blend`.
+    ///
+    /// # Examples
+    /// ```rust
+    /// # #[cfg(feature = "nightly-simd")] {
+    /// use ndarray::simd_nightly::I32x16;
+    /// let r = I32x16::mask_blend(0b101, I32x16::splat(1), I32x16::splat(-7)).to_array();
+    /// assert_eq!(&r[..4], &[-7, 1, -7, 1]);
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub fn mask_blend(mask: u16, a: Self, b: Self) -> Self {
+        Self(core::simd::Mask::<i32, 16>::from_bitmask(mask as u64).select(b.0, a.0))
+    }
+
     /// Load 16 × `i16` and sign-extend to 16 × `i32` (the `VPMOVSXWD`
     /// widening the other backends perform; here `Simd::cast`).
     ///

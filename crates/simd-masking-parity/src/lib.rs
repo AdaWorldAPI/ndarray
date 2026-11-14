@@ -1239,6 +1239,22 @@ fn check_masked_reductions() -> Result<(), u32> {
             if masked_argminmax_i32(&vals, m) != lo.zip(hi) {
                 return Err(0x8b0 | k);
             }
+            // Lane select by a 16-bit mask, the step the coordinate folds use.
+            if n >= 32 {
+                let lanes_a: [i32; 16] = core::array::from_fn(|i| vals[i]);
+                let lanes_b: [i32; 16] = core::array::from_fn(|i| vals[16 + i]);
+                let bits = (m[0] ^ (m[0] >> 16)) as u16;
+                let want: [i32; 16] =
+                    core::array::from_fn(|i| if (bits >> i) & 1 == 1 { lanes_b[i] } else { lanes_a[i] });
+                let got = ndarray::simd::I32x16::mask_blend(
+                    bits,
+                    ndarray::simd::I32x16::from_array(lanes_a),
+                    ndarray::simd::I32x16::from_array(lanes_b),
+                );
+                if got.to_array() != want {
+                    return Err(0x8c0 | k);
+                }
+            }
         }
         // The extremes must survive the masked min/max exactly, not saturate.
         if n > 0 {
