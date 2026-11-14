@@ -1010,6 +1010,9 @@ pub use crate::simd_masking_ops::{
     mask_ternlog_popcount,
     mask_xor,
     mask_xor_assign,
+    masked_argmax_i32,
+    masked_argmin_i32,
+    masked_argminmax_i32,
     masked_group_bounded_cross_power_sums_u8,
     masked_group_bounded_cross_power_sums_u8_pair,
     masked_group_bounded_cross_power_sums_u8_via,
@@ -1077,6 +1080,8 @@ pub use crate::simd_masking_ops::{
 };
 // Binary positional adders over 64 one-bit lanes (the #389/#391 `carry_save3`
 // and `flip` laws).
+/// `(position, value)` of a coordinate fold such as [`masked_argmin_i32`].
+pub use crate::simd_masking_ops::ArgI32;
 pub use crate::simd_masking_ops::{full_add_mask, half_add_mask};
 #[cfg(feature = "std")]
 pub use crate::simd_stride::{lut9, lut_u8, FACET_BYTES};

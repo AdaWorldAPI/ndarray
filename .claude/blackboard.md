@@ -1,3 +1,17 @@
+## 2026-11-14 — masked i32 coordinate folds (`masked_argmin_i32`, `masked_argmax_i32`, `masked_argminmax_i32`)
+
+- **What:** position and value of the extreme `i32` over a row mask, in `src/simd_masking_ops.rs`. Lowest position on ties. One `I32x16::gt_bitmask` per 16-lane group against a held scalar candidate; only an improving group is read lane by lane; a mask word with at most 4 selected rows is read row by row. No allocation, no index vector, no new wrapper method.
+- **Merge law:** better value wins, then lower position. Tested for segment splits merged in three orders.
+- **Tests:** `tests/masked_argminmax_i32.rs` (17, independent scalar oracle), 3 rows in `crates/simd-masking-parity` (codes 0x890, 0x8a0, 0x8b0). Native parity arm run on an AVX-512 host only; the other arms were NOT run.
+- **Disable runs:** 5 of 5 red (tie comparison, tail lanes, mask on the max side, packed-path base, sparse-path base). `ARG_FOLD_SPARSE_WORD` 4 -> 64 stays green: it is a cost knob, both paths agree.
+- **Measured (AVX-512, release, ns per element, 65,536 rows):** dense random 0.167 against 0.823 for `masked_min_i32`; half mask 0.168 against 0.507; 1-in-64 mask 0.068 against 0.046; descending lane 1.741 against 0.762. Upstream `argminmax` 0.7.1 (unmasked) 0.084 on the dense lane.
+- **Loose ends:** (1) a lane that keeps improving in row order costs a scalar read per selected row; an `I32x16` select by bitmask on every backend would remove it. (2) Narrowing an improving group by repeated packed compares was tried and measured slower on every shape; removed. (3) `i32` only. (4) `masked_min_i32` / `masked_max_i32` are still the scalar bit walk; on dense masks the coordinate fold is the faster way to get the value.
+- **Haiku run log:**
+
+| card | runs | items checked | wrong | missed |
+|---|---|---|---|---|
+| substrate-mapper | 1 (this repo) | the function inventory against a direct search | 0 | searched `src/*.rs` only, so `src/hpc/reductions.rs::argmax_f32` and `hpc/statistics.rs` were missed; reported "0 files read in full" for a 10k-line file |
+
 ## 2026-11-10 — D-U64X64-LLVM-1: Haiku run log (routes A/A0/C/D)
 
 | card | runs | items checked | wrong | missed |
