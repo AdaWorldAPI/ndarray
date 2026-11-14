@@ -1,3 +1,47 @@
+## 2026-11-14 — RESULT: bit-plane and Abakus refresh (pre-registered below)
+
+Six refresh variants interleaved per sample (rotated order), median of 31 x
+2,000, three runs per tier. AVX-512 run 2 was disturbed (half and full rows
+inflated in every column); runs 1 and 3 quoted. ns per tile:
+
+| tier | tile | set bits | walk x1 (I32x16) | planes U64x8 | Abakus U64x8 |
+|---|---|---|---|---|---|
+| AVX-512 | empty | 0 | 36.2 to 36.6 | 2,110 to 2,130 | 2,118 to 2,513 |
+| | 1/64 | 54 | 70.0 to 72.2 | 2,064 to 2,110 | 2,119 to 2,421 |
+| | 1/2 | 2,027 | 1,584 to 1,624 | 2,127 to 2,187 | 2,177 to 2,775 |
+| | 3/4 | 3,138 | 2,294 to 2,309 | 2,091 to 2,107 | 2,119 to 2,474 |
+| | full | 4,096 | 2,780 to 3,262 | 2,115 to 2,521 | 2,485 to 2,605 |
+| AVX2 | 1/2 | 2,027 | 1,694 to 2,568 | 6,135 to 8,454 | 4,693 to 6,271 |
+| | full | 4,096 | 3,286 to 3,401 | 6,088 to 6,542 | 4,678 to 4,954 |
+
+- R1 exact: holds. Every single cell, empty, full, 200 random tiles, the
+  extreme uniform weights incl. negative and -1. Disables, each red: sign
+  plane added instead of subtracted (1 test), Abakus drops the sixteens
+  column (2), Abakus keeps the carry in its own column (2), planes skip the
+  upper 8 lanes (1).
+- R2 density-independent within 10%: holds on AVX-512 (empty 2,110 to 2,130,
+  full 2,115 to 2,521 incl. the disturbed run) and AVX2.
+- R3 planes below 1,000 ns at half density: FAILED, kill hit. Planes are
+  2,127 to 2,187 ns, slower than the walk (0.74x to 0.85x).
+- R4 planes lose at 1/64: holds, by about 30x.
+- R5 Abakus no faster than planes on AVX-512: holds (0.79x to 1.00x).
+- R6 Abakus faster than planes on AVX2: holds, 1.30x to 1.46x, every density.
+
+Crossover on AVX-512: planes beat the walk from about 3/4 density
+(3/4: 1.10x; full: 1.29x to 1.31x in the undisturbed runs). On AVX2 the walk
+wins at every density (planes 0.01x to 0.55x of the walk's speed).
+
+Why the planes cost what they cost (arithmetic, not measured per port): the
+work is fixed at 16 planes x 64 words x 2 vectors = 2,048 `U64x8`
+and+popcnt+add per refresh, i.e. all 4,096 cells x 16 lanes x 16 bits are
+touched whether set or not; the walk touches one 32-byte row per SET bit.
+The planes only pay off where most cells are set.
+
+Decision: keep both in the lab as measured alternatives. The walk stays the
+reference refresh below about 3/4 density; on AVX-512 a dense tile could
+switch to planes, which is a measured dispatch, not a replacement. The
+Abakus counter is the better form wherever the vector popcount is emulated.
+
 ## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1, bit-plane refresh (per-bit addressing)
 
 Instead of walking set bits and gathering weight rows, transpose the weights
