@@ -91,48 +91,51 @@ fn main() {
     let w = weights(0x9E37_79B9_7F4A_7C15);
     let mut s = 0x1234_5678_9ABC_DEF1;
 
-    println!("\n## refresh (ns per tile, median of {SAMPLES} samples x {REPS} calls; min..max)");
-    println!("| tile | set bits | scalar | I32x16 | scalar / I32x16 |");
-    println!("|---|---|---|---|---|");
+    println!(
+        "\n## refresh (ns per tile, median of {SAMPLES} samples x {REPS} calls; the four variants interleaved per sample, order rotated)"
+    );
+    println!("| tile | set bits | scalar | I32x16 x1 | I32x16 x2 | I32x16 x4 | x1 / x2 | x2 / x4 |");
+    println!("|---|---|---|---|---|---|---|---|");
     let mut half_refresh = (0.0, 0.0);
+    let variants: [fn(&CellWeights, &BitTile) -> Acc; 4] =
+        [nnue_refresh, nnue_refresh_simd, nnue_refresh_simd2, nnue_refresh_simd4];
     for (name, num, den) in
         [("empty", 0, 1), ("1/64", 1, 64), ("1/4", 1, 4), ("1/2", 1, 2), ("3/4", 3, 4), ("full", 1, 1)]
     {
         let t = tile(&mut s, num, den);
-        assert_eq!(nnue_refresh(&w, &t), nnue_refresh_simd(&w, &t));
+        for f in &variants[1..] {
+            assert_eq!(nnue_refresh(&w, &t), f(&w, &t), "refresh parity");
+        }
         assert_no_alloc("refresh", || {
-            bb(nnue_refresh(&w, &t));
-            bb(nnue_refresh_simd(&w, &t));
+            for f in &variants {
+                bb(f(&w, &t));
+            }
         });
-        let a = measure(
-            REPS,
-            SAMPLES,
-            || {},
-            || {
-                bb(nnue_refresh(bb(&w), bb(&t)));
-            },
-        );
-        let b = measure(
-            REPS,
-            SAMPLES,
-            || {},
-            || {
-                bb(nnue_refresh_simd(bb(&w), bb(&t)));
-            },
-        );
+        let mut samples = [[0f64; SAMPLES]; 4];
+        for (n, sample) in (0..SAMPLES).enumerate() {
+            for v in 0..4 {
+                let v = (v + sample) % 4;
+                let f = variants[v];
+                let t0 = std::time::Instant::now();
+                for _ in 0..REPS {
+                    bb(f(bb(&w), bb(&t)));
+                }
+                samples[v][n] = t0.elapsed().as_nanos() as f64 / REPS as f64;
+            }
+        }
+        let med = samples.map(|x| harness::median(&x));
         if name == "1/2" {
-            half_refresh = (a.median, b.median);
+            half_refresh = (med[0], med[1]);
         }
         println!(
-            "| {name} | {} | {:.1} ({:.1}..{:.1}) | {:.1} ({:.1}..{:.1}) | {:.2} |",
+            "| {name} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} | {:.2} |",
             popcount(&t),
-            a.median,
-            a.min,
-            a.max,
-            b.median,
-            b.min,
-            b.max,
-            a.median / b.median
+            med[0],
+            med[1],
+            med[2],
+            med[3],
+            med[1] / med[2],
+            med[2] / med[3]
         );
     }
 

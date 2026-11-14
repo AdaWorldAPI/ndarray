@@ -138,6 +138,48 @@ pub fn nnue_refresh_simd(w: &CellWeights, tile: &BitTile) -> Acc {
     acc.to_array()
 }
 
+/// [`nnue_refresh_simd`] with two independent `I32x16` accumulators:
+/// consecutive set bits of a word go to alternate accumulators, so two adds
+/// are in flight instead of one dependent chain. The two are summed at the
+/// end; the result is identical because integer addition is associative and
+/// cannot overflow under the admitted bound.
+#[no_mangle]
+#[inline(never)]
+pub fn nnue_refresh_simd2(w: &CellWeights, tile: &BitTile) -> Acc {
+    let mut a0 = I32x16::from_array(w.bias);
+    let mut a1 = I32x16::splat(0);
+    for (k, &word) in tile.iter().enumerate() {
+        let mut m = word;
+        while m != 0 {
+            a0 += I32x16::from_i16_slice(&w.w[k][m.trailing_zeros() as usize]);
+            m &= m - 1;
+            if m == 0 {
+                break;
+            }
+            a1 += I32x16::from_i16_slice(&w.w[k][m.trailing_zeros() as usize]);
+            m &= m - 1;
+        }
+    }
+    (a0 + a1).to_array()
+}
+
+/// [`nnue_refresh_simd2`] with four accumulators, bits taken round-robin.
+#[no_mangle]
+#[inline(never)]
+pub fn nnue_refresh_simd4(w: &CellWeights, tile: &BitTile) -> Acc {
+    let mut acc = [I32x16::from_array(w.bias), I32x16::splat(0), I32x16::splat(0), I32x16::splat(0)];
+    for (k, &word) in tile.iter().enumerate() {
+        let mut m = word;
+        let mut lane = 0usize;
+        while m != 0 {
+            acc[lane & 3] += I32x16::from_i16_slice(&w.w[k][m.trailing_zeros() as usize]);
+            m &= m - 1;
+            lane += 1;
+        }
+    }
+    ((acc[0] + acc[1]) + (acc[2] + acc[3])).to_array()
+}
+
 /// [`nnue_update`] with one `I32x16` accumulator.
 #[no_mangle]
 #[inline(never)]

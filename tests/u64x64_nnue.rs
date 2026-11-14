@@ -151,6 +151,8 @@ fn check_all(w: &CellWeights, t: &BitTile, what: &str) {
     let want = oracle(w, t);
     assert_eq!(widen(&nnue_refresh(w, t)), want, "{what}: refresh");
     assert_eq!(widen(&nnue_refresh_simd(w, t)), want, "{what}: refresh_simd");
+    assert_eq!(widen(&nnue_refresh_simd2(w, t)), want, "{what}: refresh_simd2");
+    assert_eq!(widen(&nnue_refresh_simd4(w, t)), want, "{what}: refresh_simd4");
     let empty = [0u64; 64];
     let mut a = w.bias();
     nnue_update(w, &mut a, &empty, t);
@@ -205,6 +207,8 @@ fn the_extreme_admitted_weights_stay_exact() {
         assert!(want.unsigned_abs() < 1 << 28, "bound claimed in the module doc");
         assert_eq!(nnue_refresh(&w, &full), [want as i32; H]);
         assert_eq!(nnue_refresh_simd(&w, &full), [want as i32; H]);
+        assert_eq!(nnue_refresh_simd2(&w, &full), [want as i32; H]);
+        assert_eq!(nnue_refresh_simd4(&w, &full), [want as i32; H]);
     }
 }
 
