@@ -1013,6 +1013,8 @@ pub use crate::simd_masking_ops::{
     masked_argmax_i32,
     masked_argmin_i32,
     masked_argminmax_i32,
+    masked_code_counts_u8,
+    masked_first_row_of_code_u8,
     masked_group_bounded_cross_power_sums_u8,
     masked_group_bounded_cross_power_sums_u8_pair,
     masked_group_bounded_cross_power_sums_u8_via,
@@ -1082,6 +1084,7 @@ pub use crate::simd_masking_ops::{
 // and `flip` laws).
 /// `(position, value)` of a coordinate fold such as [`masked_argmin_i32`].
 pub use crate::simd_masking_ops::ArgI32;
+pub use crate::simd_masking_ops::{code_power_sums_u8, CodePowerSums};
 pub use crate::simd_masking_ops::{full_add_mask, half_add_mask};
 #[cfg(feature = "std")]
 pub use crate::simd_stride::{lut9, lut_u8, FACET_BYTES};

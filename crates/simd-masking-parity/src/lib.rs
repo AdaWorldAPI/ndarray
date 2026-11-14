@@ -1255,6 +1255,41 @@ fn check_masked_reductions() -> Result<(), u32> {
                     return Err(0x8c0 | k);
                 }
             }
+            // Per-code counts, the neighbour-addition power sums and the row of
+            // a code, against sums and a scan taken directly from the rows.
+            {
+                let codes: Vec<u8> = vals.iter().map(|v| v.to_le_bytes()[0]).collect();
+                let mut counts = [0u64; 256];
+                ndarray::simd::masked_code_counts_u8(&codes, m, &mut counts);
+                let rows: Vec<usize> = (0..n)
+                    .filter(|&i| (m[i / 64] >> (i % 64)) & 1 == 1)
+                    .collect();
+                let got = ndarray::simd::code_power_sums_u8(&counts);
+                if rows.is_empty() != got.is_none() {
+                    return Err(0x8d0 | k);
+                }
+                if let Some(got) = got {
+                    let mut want = [0u128; 4];
+                    for &i in &rows {
+                        let x = u128::from(codes[i]);
+                        want[0] += x;
+                        want[1] += x * x;
+                        want[2] += x * x * x;
+                        want[3] += x * x * x * x;
+                    }
+                    let lo = rows.iter().map(|&i| codes[i]).min();
+                    let hi = rows.iter().map(|&i| codes[i]).max();
+                    if got.n != rows.len() as u64 || got.sum != want || Some(got.min) != lo || Some(got.max) != hi {
+                        return Err(0x8e0 | k);
+                    }
+                    for code in [got.min, got.max, 0u8] {
+                        let scan = rows.iter().copied().find(|&i| codes[i] == code);
+                        if ndarray::simd::masked_first_row_of_code_u8(&codes, m, code) != scan {
+                            return Err(0x8f0 | k);
+                        }
+                    }
+                }
+            }
         }
         // The extremes must survive the masked min/max exactly, not saturate.
         if n > 0 {
