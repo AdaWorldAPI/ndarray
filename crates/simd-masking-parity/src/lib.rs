@@ -45,25 +45,24 @@
 //! [`run`].
 
 use ndarray::simd::{
-    count_gt_i32_at, count_set_at, sum_i32_at,
-    blend_i32, eq_f32_to_mask, eq_f64_to_mask, eq_i32_to_mask, eq_i32_to_mask_under, eq_u32_strided_to_mask,
-    eq_u32_to_mask, eq_u32_to_mask_under, eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask, ge_f32_to_mask,
-    ge_f64_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask, gt_f32_to_mask,
-    gt_f64_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask, le_f32_to_mask,
-    le_f64_to_mask, le_i32_to_mask, le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask, lt_f32_to_mask,
-    lt_f64_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, mask_all, mask_and,
-    mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_gather_u32_under, mask_not,
-    mask_not_assign, mask_not_under, mask_or, mask_or_assign, mask_scatter_or_u16, mask_scatter_or_u32, mask_set_range,
-    mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
-    mask_xor_assign, masked_argmax_i32, masked_argmin_i32, masked_argminmax_i32, masked_group_sum_i32,
-    masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
-    masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, nan_where_clear_f32,
-    nan_where_clear_f64, ne_f32_to_mask, ne_f64_to_mask, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
-    ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, lut9, lut_u8, not_nan_f32_to_mask, not_nan_f64_to_mask,
-    presence_nan_mismatches_f32, presence_nan_mismatches_f64, ternary_match_strided16_to_mask,
-    ternary_match_strided_to_mask, ternary_match_u32_to_mask, ternary_match_u32_to_mask_under,
-    ternary_match_u64_to_mask, ternary_match_u64_to_mask_under, ternlog, F32x16, F64x8, I16x32, I32x16, I8x16,
-    KeyRunCarry, MortonDir, U32x16, U64x8, U8x16,
+    blend_i32, count_gt_i32_at, count_set_at, eq_f32_to_mask, eq_f64_to_mask, eq_i32_to_mask, eq_i32_to_mask_under,
+    eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under, eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask,
+    ge_f32_to_mask, ge_f64_to_mask, ge_i32_to_mask, ge_i32_to_mask_under, ge_u64_to_mask, ge_u8_to_mask,
+    gt_f32_to_mask, gt_f64_to_mask, gt_i32_to_mask, gt_i32_to_mask_under, gt_u64_to_mask, gt_u8_to_mask,
+    le_f32_to_mask, le_f64_to_mask, le_i32_to_mask, le_i32_to_mask_under, le_u64_to_mask, le_u8_to_mask,
+    lt_f32_to_mask, lt_f64_to_mask, lt_i32_to_mask, lt_i32_to_mask_under, lt_u64_to_mask, lt_u8_to_mask, lut9, lut_u8,
+    mask_all, mask_and, mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32,
+    mask_gather_u32_under, mask_not, mask_not_assign, mask_not_under, mask_or, mask_or_assign, mask_scatter_or_u16,
+    mask_scatter_or_u32, mask_set_range, mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign,
+    mask_ternlog_popcount, mask_xor, mask_xor_assign, masked_argmax_i32, masked_argmin_i32, masked_argminmax_i32,
+    masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32, masked_min_i32,
+    masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, nan_where_clear_f32, nan_where_clear_f64,
+    ne_f32_to_mask, ne_f64_to_mask, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask, ne_u32_to_mask_under,
+    ne_u64_to_mask, ne_u8_to_mask, not_nan_f32_to_mask, not_nan_f64_to_mask, presence_nan_mismatches_f32,
+    presence_nan_mismatches_f64, sum_i32_at, ternary_match_strided16_to_mask, ternary_match_strided_to_mask,
+    ternary_match_u32_to_mask, ternary_match_u32_to_mask_under, ternary_match_u64_to_mask,
+    ternary_match_u64_to_mask_under, ternlog, F32x16, F64x8, I16x32, I32x16, I8x16, KeyRunCarry, MortonDir, U32x16,
+    U64x8, U8x16,
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
@@ -1776,7 +1775,10 @@ fn check_gather_scatter_group() -> Result<(), u32> {
         // (0xD12). Every ordinal here fits u16; the twin must equal the u32
         // reference bit for bit, and draws nothing from `rng`.
         {
-            let idx16: Vec<u16> = idx2.iter().map(|&t| u16::try_from(t).expect("fits u16")).collect();
+            let idx16: Vec<u16> = idx2
+                .iter()
+                .map(|&t| u16::try_from(t).expect("fits u16"))
+                .collect();
             let mut out16 = vec![0u64; out_len2];
             mask_scatter_or_u16(&src_bits, &idx16, &mut out16, out_rows);
             if out16 != want2_words {
@@ -2449,8 +2451,20 @@ fn check_fixedpoint_requant() -> Result<(), u32> {
     }
 
     let mut rng = SplitMix64(0x1200_0000_0019);
-    const EDGE: [i32; 12] =
-        [i32::MIN, i32::MIN + 1, -1, 0, 1, i32::MAX - 1, i32::MAX, 1 << 30, -(1 << 30), (1 << 30) + 1, -(1 << 30) - 1, 1 << 15];
+    const EDGE: [i32; 12] = [
+        i32::MIN,
+        i32::MIN + 1,
+        -1,
+        0,
+        1,
+        i32::MAX - 1,
+        i32::MAX,
+        1 << 30,
+        -(1 << 30),
+        (1 << 30) + 1,
+        -(1 << 30) - 1,
+        1 << 15,
+    ];
     const EXPS: [u32; 4] = [0, 1, 30, 31];
     let (mut trunc_differs_srdhm, mut trunc_differs_rdpot) = (0usize, 0usize);
     let (mut min_min, mut tie_pos, mut tie_neg) = (0usize, 0usize, 0usize);
@@ -2473,7 +2487,11 @@ fn check_fixedpoint_requant() -> Result<(), u32> {
                     // exact tie: odd * odd * 2^30
                     let f = |r: &mut SplitMix64| {
                         let m = ((r.next() % 0x7FFF) as i32 | 1) << 15;
-                        if r.next() & 1 == 0 { m } else { -m }
+                        if r.next() & 1 == 0 {
+                            m
+                        } else {
+                            -m
+                        }
                     };
                     a[i] = f(&mut rng);
                     b[i] = f(&mut rng);
@@ -2484,7 +2502,9 @@ fn check_fixedpoint_requant() -> Result<(), u32> {
                 }
             }
         }
-        let got = I32x16::from_array(a).saturating_rounding_doubling_high_mul(I32x16::from_array(b)).to_array();
+        let got = I32x16::from_array(a)
+            .saturating_rounding_doubling_high_mul(I32x16::from_array(b))
+            .to_array();
         for i in 0..16 {
             let want = o_srdhm(a[i], b[i]);
             if got[i] != want {
@@ -2498,7 +2518,11 @@ fn check_fixedpoint_requant() -> Result<(), u32> {
                 min_min += 1;
             }
             if p.rem_euclid(1i128 << 31) == 1i128 << 30 {
-                if p >= 0 { tie_pos += 1 } else { tie_neg += 1 }
+                if p >= 0 {
+                    tie_pos += 1
+                } else {
+                    tie_neg += 1
+                }
             }
         }
 
@@ -2521,7 +2545,9 @@ fn check_fixedpoint_requant() -> Result<(), u32> {
             };
             e[i] = ex as i32;
         }
-        let got = I32x16::from_array(x).rounding_divide_by_pot(I32x16::from_array(e)).to_array();
+        let got = I32x16::from_array(x)
+            .rounding_divide_by_pot(I32x16::from_array(e))
+            .to_array();
         for i in 0..16 {
             let want = o_rdpot(x[i], e[i] as u32);
             if got[i] != want {
