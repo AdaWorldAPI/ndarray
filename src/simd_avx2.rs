@@ -3503,6 +3503,38 @@ impl I32x16 {
             (lo | (hi << 8)) as u16
         }
     }
+
+    /// Per-lane select by a 16-bit mask: lane `i` of the result is `b`'s lane
+    /// `i` when bit `i` of `mask` is set (LSB-first, lane 0 is bit 0), and
+    /// `a`'s lane `i` otherwise. The chosen lane is copied bit for bit.
+    ///
+    /// Same argument order as `U8x64::mask_blend`. The mask is the form
+    /// [`Self::gt_bitmask`] returns, so `mask_blend(a.gt_bitmask(b), a, b)`
+    /// is the lane-wise signed minimum.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let a = I32x16::splat(1);
+    /// let b = I32x16::splat(-7);
+    /// let r = I32x16::mask_blend(0b1000_0000_0000_0101, a, b).to_array();
+    /// assert_eq!(r, [-7, 1, -7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -7]);
+    /// ```
+    ///
+    /// Each 256-bit half turns its 8 mask bits into all-ones lanes (broadcast,
+    /// AND with one bit per lane, compare) and selects with `vpblendvb`.
+    #[cfg(not(all(target_feature = "avx", not(target_feature = "avx2"))))]
+    #[inline(always)]
+    pub fn mask_blend(mask: u16, a: Self, b: Self) -> Self {
+        let (a_lo, a_hi) = a.avx2_halves();
+        let (b_lo, b_hi) = b.avx2_halves();
+        // SAFETY: AVX2 (see `avx2_halves`); register-only ops.
+        unsafe {
+            let bit = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
+            let m_lo = _mm256_cmpeq_epi32(_mm256_and_si256(_mm256_set1_epi32((mask & 0xFF) as i32), bit), bit);
+            let m_hi = _mm256_cmpeq_epi32(_mm256_and_si256(_mm256_set1_epi32((mask >> 8) as i32), bit), bit);
+            Self::from_avx2_halves(_mm256_blendv_epi8(a_lo, b_lo, m_lo), _mm256_blendv_epi8(a_hi, b_hi, m_hi))
+        }
+    }
 }
 impl Mul for I32x16 {
     type Output = Self;

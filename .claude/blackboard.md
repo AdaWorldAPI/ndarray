@@ -1,3 +1,13 @@
+## 2026-11-14 — `I32x16::mask_blend` on every backend; coordinate folds hold lane candidates
+
+- Added `I32x16::mask_blend(mask: u16, a, b)` (bit set: lane from `b`). Realizations: AVX-512 `vpblendmd`; AVX2 two halves, bit-to-lane mask + `vpblendvb`; AVX without AVX2 four quarters + `pblendvb`; NEON `vtstq_s32` + `vbslq_s32`; wasm `v128_bitselect`; `core::simd` `Mask::select`; scalar loop.
+- `masked_arg{min,max,minmax}_i32` now keep 16 lane candidates (value + group ordinal as `i32`) and select into them. Lanes, the row-by-row sparse path and pieces of `ARG_FOLD_SEGMENT_ROWS` (2^30 rows) are combined by the merge law.
+- Measured, AVX-512, release, 65,536 rows, ns/elem, argmin: descending dense 1.741 -> 0.382; random dense 0.167 -> 0.202; random 1-in-64 0.068 -> 0.039. Fused min+max: ascending dense 1.789 -> 0.371; random dense 0.196 -> 0.29..0.52 (slower; two sides now each pay a compare against a vector held in memory on some runs).
+- Parity: row `0x8c0` added; arms run and green: native (AVX-512), v3 (AVX2), avx-qemu, v2-qemu, neon-qemu, wasm, wasm-scalar. Not run: nightly-simd.
+- Disable runs (anchor asserted, exit 101 each): mask dropped, group ordinal not selected, blend operands swapped, tie between lanes reversed, piece base dropped, strict compare relaxed. `ARG_FOLD_SPARSE_WORD` 4 -> 64 stays green (cost knob).
+- Loose ends: `cargo clippy --all-targets` fails on `examples/u64x64/*` (not touched here); fused random-dense cost; no codegen witness for the AVX2 `mask_blend`.
+- Sonnet drafted `tests/i32x16_mask_blend.rs` (10 tests); ran unchanged, 10 of 10 green.
+
 ## 2026-11-14 — masked i32 coordinate folds (`masked_argmin_i32`, `masked_argmax_i32`, `masked_argminmax_i32`)
 
 - **What:** position and value of the extreme `i32` over a row mask, in `src/simd_masking_ops.rs`. Lowest position on ties. One `I32x16::gt_bitmask` per 16-lane group against a held scalar candidate; only an improving group is read lane by lane; a mask word with at most 4 selected rows is read row by row. No allocation, no index vector, no new wrapper method.

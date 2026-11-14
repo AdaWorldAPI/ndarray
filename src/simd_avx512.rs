@@ -1095,6 +1095,27 @@ impl I32x16 {
         unsafe { _mm512_cmpgt_epi32_mask(self.0, other.0) }
     }
 
+    /// Per-lane select by a 16-bit mask: lane `i` of the result is `b`'s lane
+    /// `i` when bit `i` of `mask` is set (LSB-first, lane 0 is bit 0), and
+    /// `a`'s lane `i` otherwise. The chosen lane is copied bit for bit.
+    ///
+    /// Same argument order as `U8x64::mask_blend`. The mask is the form
+    /// [`Self::gt_bitmask`] returns, so `mask_blend(a.gt_bitmask(b), a, b)`
+    /// is the lane-wise signed minimum.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let a = I32x16::splat(1);
+    /// let b = I32x16::splat(-7);
+    /// let r = I32x16::mask_blend(0b1000_0000_0000_0101, a, b).to_array();
+    /// assert_eq!(r, [-7, 1, -7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -7]);
+    /// ```
+    #[inline(always)]
+    pub fn mask_blend(mask: u16, a: Self, b: Self) -> Self {
+        // SAFETY: AVX-512F is compiled in on this arm; register-only op.
+        Self(unsafe { _mm512_mask_blend_epi32(mask, a.0, b.0) })
+    }
+
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
         Self(unsafe { _mm512_min_epi32(self.0, other.0) })

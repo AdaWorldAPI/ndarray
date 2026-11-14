@@ -539,6 +539,41 @@ impl I32x16 {
         }
         m as u16
     }
+
+    /// Per-lane select by a 16-bit mask: lane `i` of the result is `b`'s lane
+    /// `i` when bit `i` of `mask` is set (LSB-first, lane 0 is bit 0), and
+    /// `a`'s lane `i` otherwise. The chosen lane is copied bit for bit.
+    ///
+    /// Same argument order as `U8x64::mask_blend`. The mask is the form
+    /// [`Self::gt_bitmask`] returns, so `mask_blend(a.gt_bitmask(b), a, b)`
+    /// is the lane-wise signed minimum.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let a = I32x16::splat(1);
+    /// let b = I32x16::splat(-7);
+    /// let r = I32x16::mask_blend(0b1000_0000_0000_0101, a, b).to_array();
+    /// assert_eq!(r, [-7, 1, -7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -7]);
+    /// ```
+    ///
+    /// Each 128-bit quarter turns its 4 mask bits into all-ones lanes and
+    /// selects with `pblendvb` (SSE4.1).
+    #[inline(always)]
+    pub fn mask_blend(mask: u16, a: Self, b: Self) -> Self {
+        let (qa, qb) = (a.quarters(), b.quarters());
+        let mut o = [0i32; 16];
+        for k in 0..4 {
+            // SAFETY: SSE2/SSE4.1 are compiled in (module docs); the 16-byte
+            // store at lane offset `4 * k` is inside the 64-byte array.
+            unsafe {
+                let bit = _mm_setr_epi32(1, 2, 4, 8);
+                let nib = _mm_set1_epi32(((mask >> (4 * k)) & 0xF) as i32);
+                let m = _mm_cmpeq_epi32(_mm_and_si128(nib, bit), bit);
+                _mm_storeu_si128(o.as_mut_ptr().add(4 * k) as *mut __m128i, _mm_blendv_epi8(qa[k], qb[k], m));
+            }
+        }
+        Self(o)
+    }
 }
 
 // ---------------------------------------------------------------------------

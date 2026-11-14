@@ -2880,6 +2880,33 @@ pub mod wasm32_simd {
             }
             m
         }
+
+        /// Per-lane select by a 16-bit mask: lane `i` of the result is `b`'s lane
+        /// `i` when bit `i` of `mask` is set (LSB-first, lane 0 is bit 0), and
+        /// `a`'s lane `i` otherwise. The chosen lane is copied bit for bit.
+        ///
+        /// Same argument order as `U8x64::mask_blend`. The mask is the form
+        /// [`Self::gt_bitmask`] returns, so `mask_blend(a.gt_bitmask(b), a, b)`
+        /// is the lane-wise signed minimum.
+        ///
+        /// ```
+        /// use ndarray::simd::I32x16;
+        /// let a = I32x16::splat(1);
+        /// let b = I32x16::splat(-7);
+        /// let r = I32x16::mask_blend(0b1000_0000_0000_0101, a, b).to_array();
+        /// assert_eq!(r, [-7, 1, -7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -7]);
+        /// ```
+        ///
+        /// Each quad turns its 4 mask bits into all-ones lanes and selects with
+        /// `v128_bitselect`.
+        #[inline(always)]
+        pub fn mask_blend(mask: u16, a: Self, b: Self) -> Self {
+            let bit = i32x4(1, 2, 4, 8);
+            Self(core::array::from_fn(|p| {
+                let nib = i32x4_splat(((mask >> (4 * p)) & 0xF) as i32);
+                I32x4(v128_bitselect(b.0[p].0, a.0[p].0, i32x4_eq(v128_and(nib, bit), bit)))
+            }))
+        }
     }
 
     impl Add for I32x16 {

@@ -3690,6 +3690,37 @@ impl I32x16 {
         }
         m
     }
+
+    /// Per-lane select by a 16-bit mask: lane `i` of the result is `b`'s lane
+    /// `i` when bit `i` of `mask` is set (LSB-first, lane 0 is bit 0), and
+    /// `a`'s lane `i` otherwise. The chosen lane is copied bit for bit.
+    ///
+    /// Same argument order as `U8x64::mask_blend`. The mask is the form
+    /// [`Self::gt_bitmask`] returns, so `mask_blend(a.gt_bitmask(b), a, b)`
+    /// is the lane-wise signed minimum.
+    ///
+    /// ```
+    /// use ndarray::simd::I32x16;
+    /// let a = I32x16::splat(1);
+    /// let b = I32x16::splat(-7);
+    /// let r = I32x16::mask_blend(0b1000_0000_0000_0101, a, b).to_array();
+    /// assert_eq!(r, [-7, 1, -7, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, -7]);
+    /// ```
+    ///
+    /// Each quad turns its 4 mask bits into all-ones lanes (`vtstq_s32`) and
+    /// selects with `vbslq_s32`.
+    #[inline(always)]
+    pub fn mask_blend(mask: u16, a: Self, b: Self) -> Self {
+        const BIT: [i32; 4] = [1, 2, 4, 8];
+        Self(core::array::from_fn(|p| {
+            // SAFETY: NEON baseline; `BIT` holds 4 i32, the load is in bounds;
+            // the rest are register ops.
+            I32x4(unsafe {
+                let nib = vdupq_n_s32(((mask >> (4 * p)) & 0xF) as i32);
+                vbslq_s32(vtstq_s32(nib, vld1q_s32(BIT.as_ptr())), b.0[p].0, a.0[p].0)
+            })
+        }))
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
