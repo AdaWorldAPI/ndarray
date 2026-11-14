@@ -605,7 +605,8 @@ impl I32x16 {
     /// ```
     #[inline(always)]
     pub fn mask_blend(mask: u16, a: Self, b: Self) -> Self {
-        Self(core::simd::Mask::<i32, 16>::from_bitmask(mask as u64).select(b.0, a.0))
+        use core::simd::{Mask, Select};
+        Self(Mask::<i32, 16>::from_bitmask(mask as u64).select(b.0, a.0))
     }
 
     /// Load 16 × `i16` and sign-extend to 16 × `i32` (the `VPMOVSXWD`
