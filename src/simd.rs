@@ -1080,6 +1080,8 @@ pub use crate::simd_masking_ops::{
 };
 // Binary positional adders over 64 one-bit lanes (the #389/#391 `carry_save3`
 // and `flip` laws).
+/// `(position, value)` of a coordinate fold such as [`masked_argmin_i32`].
+pub use crate::simd_masking_ops::ArgI32;
 pub use crate::simd_masking_ops::{full_add_mask, half_add_mask};
 #[cfg(feature = "std")]
 pub use crate::simd_stride::{lut9, lut_u8, FACET_BYTES};

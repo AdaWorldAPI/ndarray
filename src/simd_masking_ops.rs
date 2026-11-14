@@ -5959,6 +5959,11 @@ fn masked_fold_i32(values: &[i32], mask_words: &[u64], f: impl Fn(i32, i32) -> i
 // Positions are `usize` computed from the group base, never carried in a
 // SIMD index vector, so there is no index width to overflow.
 
+/// A row of an `i32` lane named by a coordinate fold: `(position, value)`.
+/// A plain tuple alias, not an identity: the position counts rows of the lane
+/// the caller passed and means nothing outside it.
+pub type ArgI32 = (usize, i32);
+
 /// Position and value of the minimum of `values[i]` over set mask bits,
 /// `None` when no bit is set. Among equal minima the lowest position is
 /// returned. Same bit order and "bits at or past `values.len()` are ignored"
@@ -5981,7 +5986,7 @@ fn masked_fold_i32(values: &[i32], mask_words: &[u64], f: impl Fn(i32, i32) -> i
 /// assert_eq!(masked_argmin_i32(&values, &[0]), None);
 /// ```
 #[inline]
-pub fn masked_argmin_i32(values: &[i32], mask_words: &[u64]) -> Option<(usize, i32)> {
+pub fn masked_argmin_i32(values: &[i32], mask_words: &[u64]) -> Option<ArgI32> {
     masked_arg_fold_i32::<true, false>("masked_argmin_i32", values, mask_words).0
 }
 
@@ -6005,7 +6010,7 @@ pub fn masked_argmin_i32(values: &[i32], mask_words: &[u64]) -> Option<(usize, i
 /// assert_eq!(masked_argmax_i32(&values, &[0b1101]), Some((3, 30)));
 /// ```
 #[inline]
-pub fn masked_argmax_i32(values: &[i32], mask_words: &[u64]) -> Option<(usize, i32)> {
+pub fn masked_argmax_i32(values: &[i32], mask_words: &[u64]) -> Option<ArgI32> {
     masked_arg_fold_i32::<false, true>("masked_argmax_i32", values, mask_words).1
 }
 
@@ -6029,7 +6034,7 @@ pub fn masked_argmax_i32(values: &[i32], mask_words: &[u64]) -> Option<(usize, i
 /// assert_eq!(max, (2, 9));
 /// ```
 #[inline]
-pub fn masked_argminmax_i32(values: &[i32], mask_words: &[u64]) -> Option<((usize, i32), (usize, i32))> {
+pub fn masked_argminmax_i32(values: &[i32], mask_words: &[u64]) -> Option<(ArgI32, ArgI32)> {
     match masked_arg_fold_i32::<true, true>("masked_argminmax_i32", values, mask_words) {
         (Some(lo), Some(hi)) => Some((lo, hi)),
         _ => None,
@@ -6099,7 +6104,7 @@ impl ArgCandidate {
 #[inline(always)]
 fn masked_arg_fold_i32<const MIN: bool, const MAX: bool>(
     name: &str, values: &[i32], mask_words: &[u64],
-) -> (Option<(usize, i32)>, Option<(usize, i32)>) {
+) -> (Option<ArgI32>, Option<ArgI32>) {
     let n = values.len();
     let words = mask_words_for(n);
     assert!(mask_words.len() >= words, "{name}: mask_words.len()={} < required {words}", mask_words.len());

@@ -55,7 +55,8 @@ use ndarray::simd::{
     mask_and_assign, mask_andnot, mask_andnot_assign, mask_any, mask_gather_u32, mask_gather_u32_under, mask_not,
     mask_not_assign, mask_not_under, mask_or, mask_or_assign, mask_scatter_or_u16, mask_scatter_or_u32, mask_set_range,
     mask_shift_morton, mask_ternlog, mask_ternlog_any, mask_ternlog_assign, mask_ternlog_popcount, mask_xor,
-    mask_xor_assign, masked_group_sum_i32, masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
+    mask_xor_assign, masked_argmax_i32, masked_argmin_i32, masked_argminmax_i32, masked_group_sum_i32,
+    masked_group_sum_i32_via, masked_key_run_count_u32, masked_max_i32,
     masked_min_i32, masked_strided_group_sum, masked_sum_i32, masked_sum_wrapping_add_i32, nan_where_clear_f32,
     nan_where_clear_f64, ne_f32_to_mask, ne_f64_to_mask, ne_i32_to_mask, ne_i32_to_mask_under, ne_u32_to_mask,
     ne_u32_to_mask_under, ne_u64_to_mask, ne_u8_to_mask, lut9, lut_u8, not_nan_f32_to_mask, not_nan_f64_to_mask,
@@ -1218,6 +1219,26 @@ fn check_masked_reductions() -> Result<(), u32> {
             }
             if masked_max_i32(&vals, m) != selected.iter().copied().max() {
                 return Err(0x820 | k);
+            }
+            // Coordinate folds: position and value, lowest position on ties.
+            // The oracle keeps a row only when it is strictly better.
+            let (mut lo, mut hi): (Option<(usize, i32)>, Option<(usize, i32)>) = (None, None);
+            for i in (0..n).filter(|&i| (m[i / 64] >> (i % 64)) & 1 == 1) {
+                if lo.is_none_or(|(_, v)| vals[i] < v) {
+                    lo = Some((i, vals[i]));
+                }
+                if hi.is_none_or(|(_, v)| vals[i] > v) {
+                    hi = Some((i, vals[i]));
+                }
+            }
+            if masked_argmin_i32(&vals, m) != lo {
+                return Err(0x890 | k);
+            }
+            if masked_argmax_i32(&vals, m) != hi {
+                return Err(0x8a0 | k);
+            }
+            if masked_argminmax_i32(&vals, m) != lo.zip(hi) {
+                return Err(0x8b0 | k);
             }
         }
         // The extremes must survive the masked min/max exactly, not saturate.
