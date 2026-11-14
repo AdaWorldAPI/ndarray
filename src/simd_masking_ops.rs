@@ -5931,6 +5931,240 @@ fn masked_fold_i32(values: &[i32], mask_words: &[u64], f: impl Fn(i32, i32) -> i
 }
 
 // ───────────────────────────────────────────────────────────────
+// Power sums and extrema of a `u8` lane from per-code counts
+// ───────────────────────────────────────────────────────────────
+//
+// The per-row step only counts: `counts[code] += 1`. Everything else is a
+// fixed chain of additions over the 256 bins, whatever the row count.
+//
+// Walk the bins from 255 down to 1 with five accumulators, each adding its
+// neighbour:
+//
+//     t1 += c[v];  t2 += t1;  t3 += t2;  t4 += t3;  t5 += t4;
+//
+// At the end `t2 ..= t5` are `B_k = Σ_u C(u + k − 1, k) · c[u]` for
+// `k = 1 ..= 4` (the hockey-stick identity applied `k` times), and
+//
+//     Σx  = B1
+//     Σx² = 2·B2 − Σx
+//     Σx³ = 6·B3 − 3·Σx² − 2·Σx
+//     Σx⁴ = 24·B4 − 6·Σx³ − 11·Σx² − 6·Σx
+//
+// because `u(u+1) = u² + u`, `u(u+1)(u+2) = u³ + 3u² + 2u` and
+// `u(u+1)(u+2)(u+3) = u⁴ + 6u³ + 11u² + 6u`. No value is multiplied per row
+// and no lane wider than the `u8` codes is read. The minimum and maximum are
+// the first and the last non-empty bin.
+//
+// The map from counts to sums is linear, so being exact on every histogram
+// with a single non-empty bin makes it exact on all of them; the tests check
+// exactly that basis. Accumulators are `u128`: the largest, `B4`, stays below
+// `C(259, 4) · 2^64 < 2^92`.
+//
+// One histogram is 256 counters per population. For many groups the 16-byte
+// register of `masked_group_bounded_power_sums_u8` is the smaller state.
+
+/// Add, for every row selected by `mask_words`, one to `counts[values[i]]`.
+///
+/// `counts` is accumulated into, so pieces of one lane (tiles, segments) may
+/// be counted by repeated calls or by adding their tables. Same bit order and
+/// "bits at or past `values.len()` are ignored" contract as
+/// [`masked_sum_i32`]. Allocates nothing.
+///
+/// # Panics
+///
+/// Panics if `mask_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_code_counts_u8;
+///
+/// let values = [7u8, 1, 7, 2];
+/// let mut counts = [0u64; 256];
+/// masked_code_counts_u8(&values, &[0b0111], &mut counts); // rows 0, 1, 2
+/// assert_eq!((counts[7], counts[1], counts[2]), (2, 1, 0));
+/// ```
+pub fn masked_code_counts_u8(values: &[u8], mask_words: &[u64], counts: &mut [u64; 256]) {
+    let words = mask_words_for(values.len());
+    assert!(
+        mask_words.len() >= words,
+        "masked_code_counts_u8: mask_words.len()={} < required {words}",
+        mask_words.len()
+    );
+    // Four tables, so that neighbouring rows holding the same code do not
+    // wait on one counter. `u32` cells are flushed before they can wrap.
+    let mut part = [[0u32; 256]; 4];
+    let mut pending: u32 = 0;
+    let (blocks, tail) = values.as_chunks::<64>();
+    for (w, &word) in mask_words.iter().take(words).enumerate() {
+        if word == 0 {
+            continue;
+        }
+        if let Some(block) = blocks.get(w) {
+            if word == u64::MAX {
+                for quad in block.as_chunks::<4>().0 {
+                    part[0][usize::from(quad[0])] += 1;
+                    part[1][usize::from(quad[1])] += 1;
+                    part[2][usize::from(quad[2])] += 1;
+                    part[3][usize::from(quad[3])] += 1;
+                }
+            } else {
+                let mut bits = word;
+                while bits != 0 {
+                    let lane = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    part[lane & 3][usize::from(block[lane])] += 1;
+                }
+            }
+        } else {
+            // The final partial block: bits past the lane are ignored.
+            let mut bits = word;
+            while bits != 0 {
+                let lane = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if let Some(&code) = tail.get(lane) {
+                    part[lane & 3][usize::from(code)] += 1;
+                }
+            }
+        }
+        pending += 64;
+        if pending >= 1 << 31 {
+            flush_code_counts(&mut part, counts);
+            pending = 0;
+        }
+    }
+    flush_code_counts(&mut part, counts);
+}
+
+/// Add the four partial tables into `counts` and clear them.
+#[inline(always)]
+fn flush_code_counts(part: &mut [[u32; 256]; 4], counts: &mut [u64; 256]) {
+    for (code, total) in counts.iter_mut().enumerate() {
+        *total +=
+            u64::from(part[0][code]) + u64::from(part[1][code]) + u64::from(part[2][code]) + u64::from(part[3][code]);
+    }
+    *part = [[0u32; 256]; 4];
+}
+
+/// Count, first four power sums and extrema of a population of `u8` codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodePowerSums {
+    /// Number of values.
+    pub n: u64,
+    /// `sum[k − 1] = Σxᵏ` for `k = 1 ..= 4`, exact.
+    pub sum: [u128; 4],
+    /// The smallest code present.
+    pub min: u8,
+    /// The largest code present.
+    pub max: u8,
+}
+
+impl CodePowerSums {
+    /// The `(n, Σx, Σx²)` record the other power-sum folds produce, or `None`
+    /// when `Σx` does not fit its `i64` field.
+    #[inline]
+    #[must_use]
+    pub fn power_sums(&self) -> Option<PowerSums> {
+        Some(PowerSums {
+            n: self.n,
+            sum: i64::try_from(self.sum[0]).ok()?,
+            sum_sq: self.sum[1],
+        })
+    }
+}
+
+/// Count, `Σx ..= Σx⁴`, minimum and maximum of the population a table of
+/// per-code counts describes, by neighbour additions over the 256 bins (see
+/// the section note). `None` for an empty table, or when the counts add up
+/// to more than `u64::MAX` rows.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::{code_power_sums_u8, masked_code_counts_u8};
+///
+/// let values = [3u8, 2, 100, 255];
+/// let mut counts = [0u64; 256];
+/// masked_code_counts_u8(&values, &[0b1011], &mut counts); // 3, 2 and 255
+/// let s = code_power_sums_u8(&counts).unwrap();
+/// assert_eq!((s.n, s.min, s.max), (3, 2, 255));
+/// assert_eq!(s.sum[0], 3 + 2 + 255);
+/// assert_eq!(s.sum[1], 9 + 4 + 65_025);
+/// assert_eq!(s.sum[2], 27 + 8 + 16_581_375);
+/// ```
+#[must_use]
+pub fn code_power_sums_u8(counts: &[u64; 256]) -> Option<CodePowerSums> {
+    let mut n: u64 = 0;
+    for &c in counts {
+        n = n.checked_add(c)?;
+    }
+    let min = counts.iter().position(|&c| c != 0)?;
+    let max = counts.iter().rposition(|&c| c != 0)?;
+    let (mut t1, mut t2, mut t3, mut t4, mut t5) = (0u128, 0u128, 0u128, 0u128, 0u128);
+    for &c in counts[1..].iter().rev() {
+        t1 += u128::from(c);
+        t2 += t1;
+        t3 += t2;
+        t4 += t3;
+        t5 += t4;
+    }
+    let s1 = t2;
+    let s2 = 2 * t3 - s1;
+    let s3 = 6 * t4 - 3 * s2 - 2 * s1;
+    let s4 = 24 * t5 - 6 * s3 - 11 * s2 - 6 * s1;
+    Some(CodePowerSums {
+        n,
+        sum: [s1, s2, s3, s4],
+        min: min as u8,
+        max: max as u8,
+    })
+}
+
+/// The lowest row selected by `mask_words` whose value equals `code`, or
+/// `None`. With `code` the minimum or maximum from [`code_power_sums_u8`]
+/// this is the row of that extreme, lowest row on ties. Stops at the first
+/// block that holds one.
+///
+/// # Panics
+///
+/// Panics if `mask_words.len() < values.len().div_ceil(64)`.
+///
+/// # Examples
+///
+/// ```
+/// use ndarray::simd::masked_first_row_of_code_u8;
+///
+/// let values = [7u8, 1, 7, 2];
+/// assert_eq!(masked_first_row_of_code_u8(&values, &[0b1110], 7), Some(2));
+/// assert_eq!(masked_first_row_of_code_u8(&values, &[0b1110], 9), None);
+/// ```
+#[must_use]
+pub fn masked_first_row_of_code_u8(values: &[u8], mask_words: &[u64], code: u8) -> Option<usize> {
+    let words = mask_words_for(values.len());
+    assert!(
+        mask_words.len() >= words,
+        "masked_first_row_of_code_u8: mask_words.len()={} < required {words}",
+        mask_words.len()
+    );
+    let needle = crate::simd::U8x64::splat(code);
+    let (blocks, tail) = values.as_chunks::<64>();
+    for (w, &word) in mask_words.iter().take(words).enumerate() {
+        if word == 0 {
+            continue;
+        }
+        let hits = if let Some(block) = blocks.get(w) {
+            crate::simd::U8x64::from_array(*block).cmpeq_mask(needle) & word
+        } else {
+            crate::simd::U8x64::from_array(pad_tail(tail)).cmpeq_mask(needle) & word & live64(tail.len())
+        };
+        if hits != 0 {
+            return Some(w * 64 + hits.trailing_zeros() as usize);
+        }
+    }
+    None
+}
+
+// ───────────────────────────────────────────────────────────────
 // Coordinate-bearing extrema: `masked_argmin_i32`, `masked_argmax_i32`,
 // `masked_argminmax_i32`
 // ───────────────────────────────────────────────────────────────
