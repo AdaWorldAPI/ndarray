@@ -1,3 +1,45 @@
+## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1, an NNUE-style accumulator over a bound 64×64 Boolean tile
+
+Question: can a source-issued `BitTile` (`[u64; 64]`, 512 B, 4,096 cells,
+word `k` = category, bit `r` = row; `examples/u64x64/fixture.rs`) drive an
+exact, incrementally updatable weighted accumulator
+`h[j] = bias[j] + Σ_{(k,r) set} w[k][r][j]`, `j < 16`?
+
+Kinds kept apart: a bit is presence (set semantics, no sign, no count); a
+weight is a signed `i16`; the accumulator is `i32`. Bound: `|bias| <= 2^15`
+and `|w| <= 2^15 - 1`, so `|h| < 2^15 + 4096·2^15 = 2^27 + 2^15`; no `i32`
+overflow is possible, enforced by the weight constructor, not by wrapping.
+
+Routes (lab route G, `examples/u64x64/nnue.rs`; no public type, no `src/` edit):
+- G-A oracle (test file only): every one of the 4,096 cells read with
+  `(word >> r) & 1`, sums in `i64`.
+- G-B refresh: walk set bits (`trailing_zeros`), scalar `i32` adds.
+- G-C update: `d = old ^ new`, `on = d & new`, `off = d & old`; add `on`
+  rows, subtract `off` rows.
+- G-D refresh and update with `I32x16::from_i16_slice` + `Add`/`Sub`
+  (existing facade, no new primitive).
+- Bound entry points take `fixture::Bound`; an update additionally refuses two
+  frames from different sources, shapes or row orders. Versions may differ:
+  an update is between versions.
+
+Predictions and kill conditions:
+- P1 exact: G-B, G-C, G-D equal G-A on every single-cell tile (4,096), empty,
+  full, and 200 random tiles at densities 1/64, 1/4, 1/2, 3/4. Kill: any
+  mismatch.
+- P2 update chains: 1,000 random toggles applied incrementally equal a fresh
+  refresh after every step; toggling back to the start returns the start
+  accumulator exactly. Kill: any mismatch.
+- P3 no allocation inside refresh or update (counting allocator). Kill: any.
+- P4 cost: refresh scales with set bits, update with changed bits. On a
+  half-full tile, a 1-bit update is at least 100× cheaper than a refresh and
+  an 8-bit update at least 20×. Kill: update not at least 5× cheaper than
+  refresh at 8 changed bits.
+- P5 G-D refresh at least 2× faster than G-B on a half-full tile (AVX-512).
+  Kill: G-D slower than G-B.
+- P6 multiplicity: a Boolean tile cannot carry repeated edges; a bag of
+  duplicate (k, r) edges gives `Σ c·w`, which the tile path does not equal.
+  This is a counterexample to pin, not a defect to fix.
+
 ## 2026-11-14 — RESULT: power sums and extrema of a `u8` lane from per-code counts (pre-registered below)
 
 Functions: `masked_code_counts_u8`, `code_power_sums_u8` (`CodePowerSums`), `masked_first_row_of_code_u8`.
