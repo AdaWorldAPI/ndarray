@@ -1,3 +1,21 @@
+## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1 follow-up, multi-accumulator refresh
+
+Hypothesis: refresh (about 0.77 ns per set bit, one `vpaddd` chain on one
+`I32x16`) is latency-bound on that chain, not bound by loads or by the bit
+walk. Variants, same weights and tile, sums added at the end:
+- `nnue_refresh_simd2`: two `I32x16` accumulators; consecutive set bits of a
+  word alternate between them.
+- `nnue_refresh_simd4`: four accumulators, same rule.
+
+Predictions (AVX-512, half-full tile, 2,027 set bits; baseline I32x16 1,555 ns):
+- Q1 exact: both equal the per-cell oracle on every corpus route G uses.
+- Q2 two accumulators: 1.3x to 2x faster than one. Kill (hypothesis wrong):
+  below 1.15x.
+- Q3 four accumulators: no more than 1.15x faster than two (the add chain is
+  no longer the limit at two; loads of a 32-byte row per bit take over).
+- Q4 empty tile: no slower than one accumulator by more than 5 ns (the extra
+  setup is three zero vectors and two adds).
+
 ## 2026-11-14 — RESULT: D-U64X64-NNUE-1 (pre-registered below)
 
 Lab route G, `examples/u64x64/nnue.rs`; tests `tests/u64x64_nnue.rs` (10);
