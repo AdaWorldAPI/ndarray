@@ -1,3 +1,32 @@
+## 2026-11-14 — RESULT: multi-accumulator refresh (pre-registered below) — hypothesis FALSIFIED
+
+Same bench, four refresh variants interleaved per sample with a rotated
+order, AVX-512, three runs (ns per tile, median of 31 x 2,000):
+
+| tile | set bits | x1 | x2 | x4 |
+|---|---|---|---|---|
+| empty | 0 | 18.3 to 19.1 | 49.8 to 64.9 | 66.1 to 68.5 |
+| 1/2 | 2,027 | 1,559 to 1,562 | 1,616 to 1,620 | 2,510 to 2,512 |
+| full | 4,096 | 2,785 to 2,804 | 3,077 to 3,098 | 4,773 to 4,813 |
+
+- Q1 exact: holds (both variants against the per-cell oracle on every corpus;
+  disable "simd2 drops the second accumulator" turns 3 tests red).
+- Q2 x2 at least 1.3x faster: FAILED, and the kill is hit: x2 is 0.96x of x1
+  on the half tile, 0.90x on the full tile. The refresh is not latency-bound
+  on the add chain.
+- Q3 x4 at most 1.15x faster than x2: holds trivially; x4 is 0.64x of x2.
+- Q4 empty tile within 5 ns: FAILED, +31 to +46 ns for x2.
+
+Disassembly (objdump): the x1 inner loop is six instructions per set bit
+(`tzcnt`, `shl`, `vpmovsxwd` from memory, `vpaddd`, `blsr`, `jne`); the value
+carried between iterations is the bit mask through `blsr`, not only the sum.
+x2 is 70 instructions with an extra branch per bit pair; x4 is 85 with its
+accumulator array spilled (`vmovdqa` to and from the stack, `push`/`pop`).
+What does bound x1 (the widening load's port, or one mispredicted branch at
+each word end) is NOT measured; no hardware counters on this host.
+
+Kept in the lab as a recorded negative result; x1 stays the reference.
+
 ## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1 follow-up, multi-accumulator refresh
 
 Hypothesis: refresh (about 0.77 ns per set bit, one `vpaddd` chain on one
