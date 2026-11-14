@@ -1,3 +1,4 @@
+#![cfg(feature = "std")]
 #![allow(clippy::needless_range_loop)]
 //! Integration tests for the masked arg-min / arg-max folds over i32 lanes.
 //!
