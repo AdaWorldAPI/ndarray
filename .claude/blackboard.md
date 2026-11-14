@@ -1,3 +1,39 @@
+## 2026-11-14 — RESULT: power sums and extrema of a `u8` lane from per-code counts (pre-registered below)
+
+Functions: `masked_code_counts_u8`, `code_power_sums_u8` (`CodePowerSums`), `masked_first_row_of_code_u8`.
+
+| prediction | result |
+|---|---|
+| P1 exact on every single-bin table (256 codes x counts 1, 2, 65,536, 2^40) | holds |
+| P1b random tables against `Σ counts[u]·u^k` | holds, 200 tables |
+| P2 against sums taken directly from the selected rows | holds, 300 populations, lengths 0 to 70,001, three mask kinds, three value kinds |
+| P3 against `masked_group_bounded_power_sums_u8` + `widen_bounded_power_sums` | holds, tiles of 1, 64, 4,096 and 65,536 rows incl. all-255 |
+| P4 counts of pieces add | holds, 200,000 rows in 3 pieces |
+| P5 not slower than the bounded register fold, one group, dense | holds: 25 to 27 µs against 173 to 175 µs per 65,536 rows |
+| P6 chain under 2 µs | holds: 376 to 382 ns |
+
+Timing, AVX-512 host, release, one group, 65,536 rows, minimum of 7 rounds of 200 calls, three runs, µs per tile:
+
+| mask | counts + chain | existing `u8` register fold | existing wide `i32` fold |
+|---|---|---|---|
+| dense | 25.4 to 27.1 | 173.3 to 174.8 | 72.8 to 76.7 |
+| half | 31.2 to 31.6 | 82.2 to 84.9 | 43.8 to 45.6 |
+| 1 in 64 | 2.35 to 2.55 | 2.48 to 2.58 | 2.80 to 2.81 |
+
+Chain alone: 376 to 382 ns. Row of the minimum (`masked_first_row_of_code_u8`): 15 to 25 ns dense and half, 130 to 135 ns at 1 in 64.
+
+Reading the numbers:
+- The register fold's 174 µs is its ONE-group case: every row reads and rewrites the same three words, a store-to-load chain. Its own board entry measured 1.095 ns per row with 16 groups (about 72 µs per tile). The comparison here is the single-population case only, as pre-registered.
+- The count step is the whole cost (the chain is under 2% of it). It does no multiplication and returns `Σx³`, `Σx⁴`, min and max as well.
+- At 1 in 64 the three routes are equal; nothing is gained on sparse masks.
+- The group count at which 256 counters per group lose to a 16-byte register was not measured.
+
+Tests: `tests/code_power_sums_u8.rs`, 10 tests, drafted by a Sonnet worker and run unchanged. Parity rows `0x8d0`, `0x8e0`, `0x8f0`; arms green: native (AVX-512), v3, avx-qemu, v2-qemu, neon-qemu, wasm, wasm-scalar, nightly.
+
+Disable runs, anchor asserted, exit 101 each (10 of 10): chain link `t3 += t1`; `Σx³` coefficient; `Σx⁴` coefficient; bin 0 included in the chain; tail bound; dense path reads the wrong byte; flush overwrites; max taken from the front; row finder without the mask; row finder without the padding clip. One patch first failed its anchor after `cargo fmt` reflowed the line; it was re-anchored and re-run.
+
+Not done: no grouped form; no caller in mask-risc or JC yet; `Σxy` is not covered; only the AVX-512 arm was timed.
+
 ## 2026-11-14 — PRE-REGISTRATION: power sums and extrema of a `u8` lane from per-code counts by neighbour addition
 
 Written before any code or measurement of this slice.
