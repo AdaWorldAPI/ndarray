@@ -1,3 +1,40 @@
+## 2026-11-14 — RESULT: D-U64X64-NNUE-1 (pre-registered below)
+
+Lab route G, `examples/u64x64/nnue.rs`; tests `tests/u64x64_nnue.rs` (10);
+bench `cargo run --release --example u64x64_nnue --features std`. Tier read
+from the binary: avx512f=true, avx512bw=true, avx512vpopcntdq=true. Units:
+ns per tile or per update, median of 31 samples x 2,000 calls.
+
+| prediction | result |
+|---|---|
+| P1 exact on 4,096 single cells, empty, full, 200 random tiles | holds, all four routes against the per-cell `i64` oracle |
+| P2 1,000 mixed updates match a refresh; undo returns the start | holds; 300+ updates turned cells on and off together |
+| P3 no allocation in refresh or update | holds (per-thread counter, shown live) |
+| P4 1-bit update ≥100x cheaper than a half-tile refresh | MISSED: 58x (26.6 ns vs 1,555 ns). The update scans all 64 words; that floor is about 18 to 23 ns, the cost of refreshing an empty tile |
+| P4 8-bit update ≥20x; kill below 5x | holds: 37x scattered, 48x in one word |
+| P5 `I32x16` refresh ≥2x scalar on a half tile; kill if slower | MISSED, kill not hit: 1.06x. LLVM compiles the scalar 16-lane add to the same `vpmovsxwd` + `vpaddd` (objdump), so both routes are SIMD on AVX-512 |
+| P6 a tile is a set; a bag with a repeated edge differs | holds (pinned counterexample) |
+
+Refresh cost scales with set bits: 17.7 ns empty, 58.7 ns at 54 bits, 1,555 ns
+at 2,027, 2,684 ns full (about 0.6 to 0.8 ns per set bit, one dependent add
+per bit on one accumulator). Update, half-full tile: 1 bit 26.6 ns, 8 bits
+42.6 ns scattered / 32.4 ns in one word, 64 bits 123.3 ns scattered / 54.3 ns
+in one word; one cell toggled repeatedly 28.7 ns.
+
+Resident: weights 131,072 B (4,096 x 16 i16; fits L2, not L1), tile 512 B,
+accumulator 64 B; scratch 0 B.
+
+Disable runs, all red: update forgets removals (3 tests), refresh skips bit 63
+(7), SIMD refresh drops the bias (5), row-order check removed (1), `i16::MIN`
+admitted (1), update ignores word 0 (3).
+
+Not measured: AVX2, NEON, wasm and scalar tiers; two-accumulator refresh (the
+per-bit cost looks latency-bound); a source with real FK fan-out.
+
+Side finding: `masked_group_count_u32` counts into the caller's `i64` with
+`wrapping_add(1)`. Exact within one call (a wrap needs 2^63 rows) but a
+caller that accumulates across calls inherits silent wrapping.
+
 ## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1, an NNUE-style accumulator over a bound 64×64 Boolean tile
 
 Question: can a source-issued `BitTile` (`[u64; 64]`, 512 B, 4,096 cells,

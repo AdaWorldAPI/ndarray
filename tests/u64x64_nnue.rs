@@ -1,5 +1,6 @@
 #![cfg(feature = "std")]
 #![allow(dead_code)]
+#![allow(clippy::needless_range_loop)]
 //! D-U64X64-NNUE-1 exactness, refusals and allocation for lab route G
 //! (`examples/u64x64/nnue.rs`), against an independent per-cell oracle.
 
@@ -352,10 +353,20 @@ fn incompatible_frames_are_refused_and_leave_the_accumulator_untouched() {
     let reordered = bind(&reordered_src, &Expect::of(&reordered_src)).unwrap();
 
     let short_witness = Witness { rows: 63, ..a.witness };
-    let short = Bound { src: &a_src, witness: short_witness };
+    let short = Bound {
+        src: &a_src,
+        witness: short_witness,
+    };
 
     let blind_src = a_src.without_field(F_PRESENT);
-    let blind = bind(&blind_src, &Expect { fields: F_STOCK, ..Expect::of(&blind_src) }).unwrap();
+    let blind = bind(
+        &blind_src,
+        &Expect {
+            fields: F_STOCK,
+            ..Expect::of(&blind_src)
+        },
+    )
+    .unwrap();
 
     for (other, why) in [
         (&foreign, Refusal::ForeignSource),
