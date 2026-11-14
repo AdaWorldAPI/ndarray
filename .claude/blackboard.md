@@ -1,3 +1,13 @@
+## 2026-11-14 — coordinate folds: lane-candidate kernel replaced; the regression was loop shape, not the select
+
+- `llvm-objdump` on non-inlined probes of three kernels (merged, lane-candidate, blend+reduce). The lane-candidate and first blend+reduce versions copied each 16-lane group by value (`let lanes = if .. { *lanes } ..`): the group went through the stack (`vmovdqa64 [rsp+..]`), the candidate was compared from memory, and LLVM vectorized the four-groups-per-word bookkeeping into stack stores and reloads. The merged loop compares in place (`vpcmpgtd k0, zmm1, [rax]`).
+- Final kernel: the merged loop unchanged, group borrowed; an improving group is resolved by `mask_blend` to the worst value + `reduce_min`/`reduce_max` + one compare for the lowest lane. No lane candidates, no group ordinal lane, no segments.
+- Interleaved A/B, AVX-512, release, 65,536 rows, min of rounds, ns/elem, merged -> final: random dense argmin 0.163 -> 0.113, fused 0.190 -> 0.184; few-distinct dense argmin 0.163 -> 0.113; descending dense argmin 1.664 -> 0.550, fused 1.685 -> 0.551; ascending dense fused 1.802 -> 0.555; 1-in-64 argmin 0.041 -> 0.049, fused 0.051..0.055 -> 0.057.
+- For comparison the lane-candidate kernel (by-value shape) measured: random dense argmin 0.195, fused 0.286; descending dense 0.375 / 0.274. A lane-candidate kernel with the borrowed shape was NOT built or measured; it may be faster on monotone lanes.
+- The earlier "fused random dense 0.522" was noise; three interleaved rounds gave 0.286.
+- Parity arms green on the final kernel: native (AVX-512), v3, avx-qemu, neon-qemu, wasm, nightly. Disable runs, anchors asserted, exit 101: lowest-lane pick, filler value, blend operands, group base, AVX-512 blend operand order (5 of 5).
+- Lesson for this file's other folds: a by-value copy of a chunk before a wrapper compare can cost more than the step it feeds. Read the disassembly before attributing a regression to an instruction choice.
+
 ## 2026-11-14 — `I32x16::mask_blend` on every backend; coordinate folds hold lane candidates
 
 - Added `I32x16::mask_blend(mask: u16, a, b)` (bit set: lane from `b`). Realizations: AVX-512 `vpblendmd`; AVX2 two halves, bit-to-lane mask + `vpblendvb`; AVX without AVX2 four quarters + `pblendvb`; NEON `vtstq_s32` + `vbslq_s32`; wasm `v128_bitselect`; `core::simd` `Mask::select`; scalar loop.
