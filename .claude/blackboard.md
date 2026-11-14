@@ -10,7 +10,8 @@ order, AVX-512, three runs (ns per tile, median of 31 x 2,000):
 | full | 4,096 | 2,785 to 2,804 | 3,077 to 3,098 | 4,773 to 4,813 |
 
 - Q1 exact: holds (both variants against the per-cell oracle on every corpus;
-  disable "simd2 drops the second accumulator" turns 3 tests red).
+  disable "simd2 drops the second accumulator" turns 2 tests red; the
+  single-cell tiles never reach the second accumulator).
 - Q2 x2 at least 1.3x faster: FAILED, and the kill is hit: x2 is 0.96x of x1
   on the half tile, 0.90x on the full tile. The refresh is not latency-bound
   on the add chain.
