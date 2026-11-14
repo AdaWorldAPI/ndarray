@@ -1,3 +1,28 @@
+## 2026-11-14 — PRE-REGISTRATION: power sums and extrema of a `u8` lane from per-code counts by neighbour addition
+
+Written before any code or measurement of this slice.
+
+**Claim under test.** For a masked `u8` lane, `n`, `Σx`, `Σx²`, `Σx³`, `Σx⁴`, min and max can be obtained from ONE per-row step that only counts (`counts[code] += 1`) followed by a fixed chain of additions over the 256 bins, with no per-row multiplication and no `i32` lane.
+
+**Mechanism.** Walk the bins from 255 down to 1 with a chain of accumulators, each adding its neighbour: `t1 += c[v]; t2 += t1; t3 += t2; t4 += t3; t5 += t4`. At the end `t2..t5` are `B_k = Σ_u C(u+k−1, k)·c[u]` for `k = 1..4`. Then `S1 = B1`, `S2 = 2·B2 − S1`, `S3 = 6·B3 − 3·S2 − 2·S1`, `S4 = 24·B4 − 6·S3 − 11·S2 − 6·S1`. Min and max are the first and last non-empty bin.
+
+**Why it should be exact.** The map counts -> sums is linear. If the chain gives `c·u^k` for every histogram with one non-empty bin `u`, it is right for every histogram, provided nothing overflows. Accumulators are `u128`: the largest, `B_4`, is below `C(259,4)·2^64 < 2^92`.
+
+**Predictions (each can fail).**
+- P1 exactness on a basis: for every code `u` in 0..=255 and counts 1 and 2^40, the chain returns exactly `c·u^k`, `k = 1..4`, min = max = `u`.
+- P2 against rows: on random masked populations the result equals sums computed directly from the selected rows in `u128`.
+- P3 against the existing fold: `n`, `Σx`, `Σx²` equal `widen_bounded_power_sums(masked_group_bounded_power_sums_u8(..))` with all keys 0, on tiles up to 65,536 rows.
+- P4 additivity: counts of pieces add, and the sums from the added counts equal the sums of the whole.
+- P5 cost, one group, 65,536 rows, AVX-512 host, release, µs per tile: the count step plus the chain is not slower than the existing bounded register fold on a dense mask.
+- P6 the chain itself (256 bins, 5 accumulators) costs under 2 µs.
+
+**Kill conditions.**
+- Any mismatch in P1 to P4: the routine is wrong; nothing ships.
+- P5 fails: the route is reported as slower for one group and is not offered as a replacement; higher powers remain its only justification.
+- P6 fails: reported with the number.
+
+**Known limit, stated now.** One histogram is 256 counters per GROUP. For many groups the existing 16-byte register per group is smaller. This slice claims the single-population case only; the group count at which the register wins is not predicted and will be reported if measured.
+
 ## 2026-11-14 — coordinate folds: lane-candidate kernel replaced; the regression was loop shape, not the select
 
 - `llvm-objdump` on non-inlined probes of three kernels (merged, lane-candidate, blend+reduce). The lane-candidate and first blend+reduce versions copied each 16-lane group by value (`let lanes = if .. { *lanes } ..`): the group went through the stack (`vmovdqa64 [rsp+..]`), the candidate was compared from memory, and LLVM vectorized the four-groups-per-word bookkeeping into stack stores and reloads. The merged loop compares in place (`vpcmpgtd k0, zmm1, [rax]`).
