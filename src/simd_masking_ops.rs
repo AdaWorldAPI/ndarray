@@ -5936,11 +5936,12 @@ fn masked_fold_i32(values: &[i32], mask_words: &[u64], f: impl Fn(i32, i32) -> i
 // ───────────────────────────────────────────────────────────────
 //
 // The answer is a POSITION in the lane the caller passed, plus the value
-// there. Nothing is copied, compacted or allocated: no position list, no
-// second mask, no index vector. The fold keeps one scalar candidate and asks
-// each 16-lane group one packed question ("is any selected lane strictly
-// better than the candidate?", `I32x16::gt_bitmask`); only a group that
-// answers yes is looked at lane by lane.
+// there. Nothing is compacted or allocated: no position list, no second
+// mask, no index vector. The fold keeps one scalar candidate and asks each
+// 16-lane group one packed question ("is any selected lane strictly better
+// than the candidate?", `I32x16::gt_bitmask`); only a group that answers yes
+// is narrowed to its best value, by further packed compares. A mask word
+// with very few selected rows is read row by row instead.
 //
 // ## Tie rule: the lowest position wins
 //
@@ -6044,12 +6045,12 @@ pub fn masked_argminmax_i32(values: &[i32], mask_words: &[u64]) -> Option<(ArgI3
 /// One candidate of the coordinate fold: the position and value held so far,
 /// and that value broadcast for the packed compare.
 #[derive(Clone, Copy)]
-struct ArgCandidate {
-    at: Option<(usize, i32)>,
+struct ArgCandidate<const MAX: bool> {
+    at: Option<ArgI32>,
     splat: crate::simd::I32x16,
 }
 
-impl ArgCandidate {
+impl<const MAX: bool> ArgCandidate<MAX> {
     #[inline(always)]
     fn new() -> Self {
         Self {
@@ -6058,46 +6059,77 @@ impl ArgCandidate {
         }
     }
 
-    /// The selected lanes of `v` that are strictly better than the candidate
-    /// (every selected lane while there is no candidate yet).
+    /// The lanes of `v` strictly better than the broadcast value.
     #[inline(always)]
-    fn improving<const MAX: bool>(&self, v: crate::simd::I32x16, selected: u16) -> u16 {
-        if self.at.is_none() {
-            selected
-        } else if MAX {
-            v.gt_bitmask(self.splat) & selected
+    fn better(&self, v: crate::simd::I32x16) -> u16 {
+        if MAX {
+            v.gt_bitmask(self.splat)
         } else {
-            self.splat.gt_bitmask(v) & selected
+            self.splat.gt_bitmask(v)
         }
     }
 
-    /// Walk the improving lanes in ascending position; keep a lane only when
-    /// it is strictly better, so the lowest position of the best value stays.
+    /// One row, read as a scalar: kept only when strictly better, so among
+    /// equal values the row seen first (the lowest) stays.
     #[inline(always)]
-    fn take<const MAX: bool>(&mut self, lanes: &[i32; 16], base: usize, mut improving: u16) {
-        while improving != 0 {
-            let lane = improving.trailing_zeros() as usize;
-            improving &= improving - 1;
-            let x = lanes[lane];
-            let better = match self.at {
-                None => true,
-                Some((_, held)) => {
-                    if MAX {
-                        x > held
-                    } else {
-                        x < held
-                    }
+    fn offer(&mut self, at: usize, x: i32) {
+        let better = match self.at {
+            None => true,
+            Some((_, held)) => {
+                if MAX {
+                    x > held
+                } else {
+                    x < held
                 }
-            };
-            if better {
-                self.at = Some((base + lane, x));
             }
-        }
-        if let Some((_, held)) = self.at {
-            self.splat = crate::simd::I32x16::splat(held);
+        };
+        if better {
+            self.at = Some((at, x));
+            self.splat = crate::simd::I32x16::splat(x);
         }
     }
+
+    /// One 16-lane group. `selected` is never zero here.
+    ///
+    /// With no candidate yet the first selected lane seeds it. Then, while
+    /// some selected lane is strictly better than the broadcast value, the
+    /// middle one of those lanes becomes the value: every lane that is not
+    /// better than it drops out, so the set shrinks each round and ends
+    /// empty at the group's best value. A monotone group takes at most five
+    /// rounds, not sixteen lane reads. The position is then the lowest
+    /// selected lane EQUAL to that value (neither side greater), which is
+    /// the tie rule.
+    #[inline(always)]
+    fn group(&mut self, lanes: &[i32; 16], base: usize, selected: u16) {
+        let v = crate::simd::I32x16::from_array(*lanes);
+        if self.at.is_none() {
+            let lane = selected.trailing_zeros() as usize;
+            self.offer(base + lane, lanes[lane]);
+        }
+        let mut improving = self.better(v) & selected;
+        if improving == 0 {
+            return;
+        }
+        let mut best = 0i32;
+        while improving != 0 {
+            let mut middle = improving;
+            for _ in 0..improving.count_ones() / 2 {
+                middle &= middle - 1;
+            }
+            best = lanes[middle.trailing_zeros() as usize];
+            self.splat = crate::simd::I32x16::splat(best);
+            improving = self.better(v) & selected;
+        }
+        let equal = selected & !v.gt_bitmask(self.splat) & !self.splat.gt_bitmask(v);
+        self.at = Some((base + equal.trailing_zeros() as usize, best));
+    }
 }
+
+/// A mask word with at most this many selected rows is read row by row; a
+/// fuller word goes through the packed 16-lane compare. Measured on the
+/// AVX-512 arm: a row read costs about what a quarter of a packed group
+/// does, so the two paths cross near four rows per word.
+const ARG_FOLD_SPARSE_WORD: u32 = 4;
 
 /// Shared body of the coordinate folds. `MIN` / `MAX` choose which sides are
 /// tracked; an untracked side stays `None` and costs nothing.
@@ -6108,35 +6140,48 @@ fn masked_arg_fold_i32<const MIN: bool, const MAX: bool>(
     let n = values.len();
     let words = mask_words_for(n);
     assert!(mask_words.len() >= words, "{name}: mask_words.len()={} < required {words}", mask_words.len());
-    let mut lo = ArgCandidate::new();
-    let mut hi = ArgCandidate::new();
-    let mut group = |lanes: &[i32; 16], g: usize, live: usize| {
-        let selected = ((mask_words[g / 4] >> ((g % 4) * 16)) as u16) & live16(live);
-        if selected == 0 {
-            return;
+    let mut lo = ArgCandidate::<false>::new();
+    let mut hi = ArgCandidate::<true>::new();
+    for (w, &word) in mask_words.iter().take(words).enumerate() {
+        let base = w * 64;
+        let live = (n - base).min(64);
+        // Bits at or past `values.len()` are dropped here, once per word.
+        let mut bits = if live == 64 { word } else { word & ((1u64 << live) - 1) };
+        if bits == 0 {
+            continue;
         }
-        let v = crate::simd::I32x16::from_array(*lanes);
-        if MIN {
-            let improving = lo.improving::<false>(v, selected);
-            if improving != 0 {
-                lo.take::<false>(lanes, g * 16, improving);
+        if bits.count_ones() <= ARG_FOLD_SPARSE_WORD {
+            while bits != 0 {
+                let i = base + bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                if MIN {
+                    lo.offer(i, values[i]);
+                }
+                if MAX {
+                    hi.offer(i, values[i]);
+                }
+            }
+            continue;
+        }
+        for g in 0..live.div_ceil(16) {
+            let selected = (bits >> (g * 16)) as u16;
+            if selected == 0 {
+                continue;
+            }
+            let at = base + g * 16;
+            // A short last group is zero-padded; its padding lanes are not
+            // in `selected`, so a padded zero is never read as a row.
+            let lanes: [i32; 16] = match values[at..].first_chunk::<16>() {
+                Some(full) => *full,
+                None => pad_tail(&values[at..]),
+            };
+            if MIN {
+                lo.group(&lanes, at, selected);
+            }
+            if MAX {
+                hi.group(&lanes, at, selected);
             }
         }
-        if MAX {
-            let improving = hi.improving::<true>(v, selected);
-            if improving != 0 {
-                hi.take::<true>(lanes, g * 16, improving);
-            }
-        }
-    };
-    let (chunks, tail) = values.as_chunks::<16>();
-    for (g, lanes) in chunks.iter().enumerate() {
-        group(lanes, g, 16);
-    }
-    if !tail.is_empty() {
-        // Padding lanes are zero and are cleared from `selected` by
-        // `live16`, so a padded zero can never be a candidate.
-        group(&pad_tail(tail), chunks.len(), tail.len());
     }
     (lo.at, hi.at)
 }
