@@ -31,6 +31,8 @@ admitted (1), update ignores word 0 (3).
 Not measured: AVX2, NEON, wasm and scalar tiers; two-accumulator refresh (the
 per-bit cost looks latency-bound); a source with real FK fan-out.
 
+Haiku run: substrate-mapper over `examples/u64x64/` (11 files read in full). 2 items checked against source (`route_b.rs:387-389` text; `fixture.rs:360` `Weights`), 0 wrong; it self-corrected 2 of its own lines. Not relied on for any conclusion: the lab was also read directly.
+
 Side finding: `masked_group_count_u32` counts into the caller's `i64` with
 `wrapping_add(1)`. Exact within one call (a wrap needs 2^63 rows) but a
 caller that accumulates across calls inherits silent wrapping.
