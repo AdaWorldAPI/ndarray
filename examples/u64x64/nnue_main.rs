@@ -91,36 +91,62 @@ fn main() {
     let w = weights(0x9E37_79B9_7F4A_7C15);
     let mut s = 0x1234_5678_9ABC_DEF1;
 
+    let p = PlaneWeights::from(&w);
     println!(
-        "\n## refresh (ns per tile, median of {SAMPLES} samples x {REPS} calls; the four variants interleaved per sample, order rotated)"
+        "\n## refresh (ns per tile, median of {SAMPLES} samples x {REPS} calls; the six variants interleaved per sample, order rotated)"
     );
-    println!("| tile | set bits | scalar | I32x16 x1 | I32x16 x2 | I32x16 x4 | x1 / x2 | x2 / x4 |");
-    println!("|---|---|---|---|---|---|---|---|");
+    println!(
+        "| tile | set bits | scalar walk | I32x16 x1 | I32x16 x2 | I32x16 x4 | planes U64x8 | Abakus U64x8 | x1 / planes | planes / Abakus |"
+    );
+    println!("|---|---|---|---|---|---|---|---|---|---|");
     let mut half_refresh = (0.0, 0.0);
-    let variants: [fn(&CellWeights, &BitTile) -> Acc; 4] =
-        [nnue_refresh, nnue_refresh_simd, nnue_refresh_simd2, nnue_refresh_simd4];
+    const V: usize = 6;
+    let run = |v: usize, t: &BitTile| -> Acc {
+        match v {
+            0 => nnue_refresh(&w, t),
+            1 => nnue_refresh_simd(&w, t),
+            2 => nnue_refresh_simd2(&w, t),
+            3 => nnue_refresh_simd4(&w, t),
+            4 => nnue_refresh_planes(&p, t),
+            _ => nnue_refresh_abakus(&p, t),
+        }
+    };
+    let time = |v: usize, t: &BitTile| -> f64 {
+        macro_rules! reps {
+            ($e:expr) => {{
+                let t0 = std::time::Instant::now();
+                for _ in 0..REPS {
+                    bb($e);
+                }
+                t0.elapsed().as_nanos() as f64 / REPS as f64
+            }};
+        }
+        match v {
+            0 => reps!(nnue_refresh(bb(&w), bb(t))),
+            1 => reps!(nnue_refresh_simd(bb(&w), bb(t))),
+            2 => reps!(nnue_refresh_simd2(bb(&w), bb(t))),
+            3 => reps!(nnue_refresh_simd4(bb(&w), bb(t))),
+            4 => reps!(nnue_refresh_planes(bb(&p), bb(t))),
+            _ => reps!(nnue_refresh_abakus(bb(&p), bb(t))),
+        }
+    };
     for (name, num, den) in
         [("empty", 0, 1), ("1/64", 1, 64), ("1/4", 1, 4), ("1/2", 1, 2), ("3/4", 3, 4), ("full", 1, 1)]
     {
         let t = tile(&mut s, num, den);
-        for f in &variants[1..] {
-            assert_eq!(nnue_refresh(&w, &t), f(&w, &t), "refresh parity");
+        for v in 1..V {
+            assert_eq!(run(0, &t), run(v, &t), "refresh parity, variant {v}");
         }
         assert_no_alloc("refresh", || {
-            for f in &variants {
-                bb(f(&w, &t));
+            for v in 0..V {
+                bb(run(v, &t));
             }
         });
-        let mut samples = [[0f64; SAMPLES]; 4];
-        for (n, sample) in (0..SAMPLES).enumerate() {
-            for v in 0..4 {
-                let v = (v + sample) % 4;
-                let f = variants[v];
-                let t0 = std::time::Instant::now();
-                for _ in 0..REPS {
-                    bb(f(bb(&w), bb(&t)));
-                }
-                samples[v][n] = t0.elapsed().as_nanos() as f64 / REPS as f64;
+        let mut samples = [[0f64; SAMPLES]; V];
+        for sample in 0..SAMPLES {
+            for v in 0..V {
+                let v = (v + sample) % V;
+                samples[v][sample] = time(v, &t);
             }
         }
         let med = samples.map(|x| harness::median(&x));
@@ -128,14 +154,16 @@ fn main() {
             half_refresh = (med[0], med[1]);
         }
         println!(
-            "| {name} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} | {:.2} |",
+            "| {name} | {} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.1} | {:.2} | {:.2} |",
             popcount(&t),
             med[0],
             med[1],
             med[2],
             med[3],
-            med[1] / med[2],
-            med[2] / med[3]
+            med[4],
+            med[5],
+            med[1] / med[4],
+            med[4] / med[5]
         );
     }
 

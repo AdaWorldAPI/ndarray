@@ -419,3 +419,55 @@ fn a_tile_drops_multiplicity_that_a_bag_of_edges_keeps() {
     );
     assert_eq!(to_tile(&repeated), to_tile(&distinct));
 }
+
+// ---------------------------------------------------------------- bit planes
+
+/// Both bit-plane routes against the oracle, planes built once per weight
+/// set: every single cell, empty, full, random tiles, and the extreme
+/// uniform weights (sign bit set and clear).
+#[test]
+fn plane_routes_match_the_oracle() {
+    let w = weights(0x51DE_C0DE);
+    let p = PlaneWeights::from(&w);
+    let check = |t: &BitTile, what: &str| {
+        let want = oracle(&w, t);
+        assert_eq!(widen(&nnue_refresh_planes(&p, t)), want, "{what}: planes");
+        assert_eq!(widen(&nnue_refresh_abakus(&p, t)), want, "{what}: abakus");
+    };
+    for c in 0..4096 {
+        let mut t = [0u64; 64];
+        t[c / 64] = 1u64 << (c % 64);
+        check(&t, &format!("cell {c}"));
+    }
+    check(&[0u64; 64], "empty");
+    check(&[u64::MAX; 64], "full");
+    let mut s = 0xFEED_FACE_0BAD_F00D;
+    for (num, den) in [(1, 64), (1, 4), (1, 2), (3, 4), (63, 64)] {
+        for i in 0..40 {
+            let t = tile(&mut s, num, den);
+            check(&t, &format!("density {num}/{den} #{i}"));
+        }
+    }
+    for (v, b) in [(i16::MAX, 1 << 15), (-i16::MAX, -(1 << 15)), (-1, 0), (1, -1)] {
+        let wu = uniform(v, b);
+        let pu = PlaneWeights::from(&wu);
+        let full = [u64::MAX; 64];
+        let want = (i64::from(b) + 4096 * i64::from(v)) as i32;
+        assert_eq!(nnue_refresh_planes(&pu, &full), [want; H], "uniform {v}");
+        assert_eq!(nnue_refresh_abakus(&pu, &full), [want; H], "uniform {v} abakus");
+    }
+}
+
+/// A column count that needs every Abakus column: 64 equal set words give
+/// counts up to 64 per lane group (sixteens column reached four times).
+#[test]
+fn the_abakus_counter_reaches_its_top_column() {
+    let w = uniform(1, 0);
+    let p = PlaneWeights::from(&w);
+    let full = [u64::MAX; 64];
+    // every lane j counts 4096 set bits at plane b = 0
+    assert_eq!(nnue_refresh_abakus(&p, &full), [4096; H]);
+    let mut t = [0u64; 64];
+    t[63] = 1;
+    assert_eq!(nnue_refresh_abakus(&p, &t), [1; H], "only the last word");
+}

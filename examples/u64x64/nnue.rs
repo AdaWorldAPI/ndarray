@@ -29,7 +29,7 @@
 //! Lab fixture only: no public type, no production caller.
 
 use crate::fixture::{BitTile, Bound, Refusal, Witness, F_PRESENT};
-use ndarray::simd::I32x16;
+use ndarray::simd::{I32x16, U64x8};
 
 /// Accumulator width (one `I32x16`).
 pub const H: usize = 16;
@@ -202,6 +202,130 @@ pub fn nnue_update_simd(w: &CellWeights, acc: &mut Acc, old: &BitTile, new: &Bit
         }
     }
     *acc = a.to_array();
+}
+
+/// The weights transposed into bit planes: `p[b][k][j]` is a `u64` whose bit
+/// `r` is bit `b` of `w[k][r][j]` read as two's complement. 16 planes x 64
+/// categories x `H` lanes x 8 bytes = 131,072 bytes, the same bytes as the
+/// weights. Built once per weight set.
+pub struct PlaneWeights {
+    bias: Acc,
+    p: Box<[[[u64; H]; 64]]>,
+}
+
+impl PlaneWeights {
+    pub fn from(w: &CellWeights) -> Self {
+        let mut p = vec![[[0u64; H]; 64]; 16].into_boxed_slice();
+        for b in 0..16 {
+            for k in 0..64 {
+                for j in 0..H {
+                    let mut plane = 0u64;
+                    for r in 0..64 {
+                        let bit = (w.w[k][r][j] as u16 >> b) & 1;
+                        plane |= u64::from(bit) << r;
+                    }
+                    p[b][k][j] = plane;
+                }
+            }
+        }
+        PlaneWeights { bias: w.bias, p }
+    }
+}
+
+/// `h[j] = bias[j] + Σ_{b<15} 2^b n[b][j] − 2^15 n[15][j]`, the two's
+/// complement weights of bit `b` (`b = 15` is the sign bit). Exact in `i64`;
+/// the admitted bound puts the result in `i32`.
+fn combine(bias: &Acc, n: &[[u64; H]; 16]) -> Acc {
+    let mut out = [0i32; H];
+    for j in 0..H {
+        let mut h = i64::from(bias[j]);
+        for b in 0..15 {
+            h += (n[b][j] as i64) << b;
+        }
+        h -= (n[15][j] as i64) << 15;
+        out[j] = h as i32;
+    }
+    out
+}
+
+/// Refresh by per-bit addressing: `n[b][j] = Σ_k popcount(tile[k] &
+/// p[b][k][j])`, eight `j` per `U64x8`. No set bit is walked and no row is
+/// gathered; every word of the tile is read, so the cost does not depend on
+/// density.
+#[no_mangle]
+#[inline(never)]
+pub fn nnue_refresh_planes(p: &PlaneWeights, tile: &BitTile) -> Acc {
+    let mut n = [[0u64; H]; 16];
+    for b in 0..16 {
+        let mut c0 = U64x8::splat(0);
+        let mut c1 = U64x8::splat(0);
+        for k in 0..64 {
+            let t = U64x8::splat(tile[k]);
+            let row = &p.p[b][k];
+            c0 += (t & U64x8::from_slice(&row[0..8])).popcnt();
+            c1 += (t & U64x8::from_slice(&row[8..16])).popcnt();
+        }
+        c0.copy_to_slice(&mut n[b][0..8]);
+        c1.copy_to_slice(&mut n[b][8..16]);
+    }
+    combine(&p.bias, &n)
+}
+
+/// Carry-save adder over 8 lanes: `(sum, carry)` of three masks, the
+/// `full_add_mask` law (`a ^ b ^ c`, majority) as one `ternlog` each.
+#[inline(always)]
+fn csa(a: U64x8, b: U64x8, c: U64x8) -> (U64x8, U64x8) {
+    (a.ternlog::<0x96>(b, c), a.ternlog::<0xE8>(b, c))
+}
+
+/// Σ popcount of 64 masks `tile[k] & row(k)` for one group of 8 lanes, as an
+/// Abakus column counter: masks enter the ones column, carries move to the
+/// adjacent column (twos, fours, eights, sixteens) by carry-save addition
+/// (Harley-Seal over groups of 16), and each column is popcounted once.
+#[inline(always)]
+fn abakus_count(tile: &BitTile, rows: &[[u64; H]; 64], half: usize) -> U64x8 {
+    let z = U64x8::splat(0);
+    let x = |k: usize| U64x8::splat(tile[k]) & U64x8::from_slice(&rows[k][half * 8..half * 8 + 8]);
+    let (mut ones, mut twos, mut fours, mut eights) = (z, z, z, z);
+    let mut sixteens = z;
+    for g in 0..4 {
+        let k = g * 16;
+        let (o, ta) = csa(ones, x(k), x(k + 1));
+        let (o, tb) = csa(o, x(k + 2), x(k + 3));
+        let (t, fa) = csa(twos, ta, tb);
+        let (o, ta) = csa(o, x(k + 4), x(k + 5));
+        let (o, tb) = csa(o, x(k + 6), x(k + 7));
+        let (t, fb) = csa(t, ta, tb);
+        let (f, ea) = csa(fours, fa, fb);
+        let (o, ta) = csa(o, x(k + 8), x(k + 9));
+        let (o, tb) = csa(o, x(k + 10), x(k + 11));
+        let (t, fa) = csa(t, ta, tb);
+        let (o, ta) = csa(o, x(k + 12), x(k + 13));
+        let (o, tb) = csa(o, x(k + 14), x(k + 15));
+        let (t, fb) = csa(t, ta, tb);
+        let (f, eb) = csa(f, fa, fb);
+        let (e, s) = csa(eights, ea, eb);
+        ones = o;
+        twos = t;
+        fours = f;
+        eights = e;
+        sixteens += s.popcnt();
+    }
+    let sh = |v: U64x8, by: u32| U64x8::from_array(v.to_array().map(|c| c << by));
+    sh(sixteens, 4) + sh(eights.popcnt(), 3) + sh(fours.popcnt(), 2) + sh(twos.popcnt(), 1) + ones.popcnt()
+}
+
+/// [`nnue_refresh_planes`] with the popcounts taken through the Abakus
+/// column counter: about one popcount per 16 words instead of one per word.
+#[no_mangle]
+#[inline(never)]
+pub fn nnue_refresh_abakus(p: &PlaneWeights, tile: &BitTile) -> Acc {
+    let mut n = [[0u64; H]; 16];
+    for b in 0..16 {
+        abakus_count(tile, &p.p[b], 0).copy_to_slice(&mut n[b][0..8]);
+        abakus_count(tile, &p.p[b], 1).copy_to_slice(&mut n[b][8..16]);
+    }
+    combine(&p.bias, &n)
 }
 
 /// The accumulator of a bound source's `present` tile. Refuses a frame
