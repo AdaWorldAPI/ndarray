@@ -411,6 +411,11 @@ jobs:
         run: bash scripts/masking-parity.sh wasm-scalar
       - name: masking parity (wasm, +simd128 +relaxed-simd)
         run: bash scripts/masking-parity.sh wasm-relaxed
+      - run: rustup target add wasm32-wasip1
+      - name: add_pm / sub_pm probe tests (wasm32-wasip1, +simd128, node WASI)
+        run: bash scripts/add-pm-backends.sh wasm
+      - name: add_pm / sub_pm probe tests (wasm32-wasip1, scalar, node WASI)
+        run: bash scripts/add-pm-backends.sh wasm-scalar
 
   nightly:
     # The `core::simd` realization behind the opt-in `nightly-simd` feature.
