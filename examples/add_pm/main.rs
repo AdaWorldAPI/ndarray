@@ -3,6 +3,8 @@
 //! `tests/add_pm.rs`; this only times the two paths on the host tier.
 //!
 //!   cargo run --release --example add_pm --features std
+// `Pm::untouched` and the reference helpers are used by tests/add_pm.rs.
+#[allow(dead_code)]
 mod pm;
 
 use std::hint::black_box;
@@ -25,7 +27,10 @@ fn blocks(n: usize, seed: u64) -> Vec<Pm> {
             s ^= s << 13;
             s ^= s >> 7;
             s ^= s << 17;
-            Pm { mag: U8x64::from_array(mag), pos: s }
+            Pm {
+                mag: U8x64::from_array(mag),
+                pos: s,
+            }
         })
         .collect()
 }
@@ -48,7 +53,10 @@ fn time(name: &str, a: &[Pm], b: &[Pm], f: fn(Pm, Pm) -> (Pm, u64)) {
 }
 
 fn main() {
-    assert!(!cfg!(debug_assertions), "release build only");
+    if cfg!(debug_assertions) {
+        eprintln!("release build only");
+        return;
+    }
     #[cfg(target_arch = "x86_64")]
     println!(
         "# avx2={} avx512f={} avx512bw={} (runtime); built avx512bw={}",

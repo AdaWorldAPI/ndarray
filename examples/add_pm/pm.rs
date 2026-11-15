@@ -29,7 +29,10 @@ pub struct Pm {
 impl Pm {
     /// Every lane never touched.
     pub fn untouched() -> Self {
-        Pm { mag: U8x64::splat(0), pos: 0 }
+        Pm {
+            mag: U8x64::splat(0),
+            pos: 0,
+        }
     }
 }
 
@@ -108,5 +111,11 @@ pub fn add_decoded(a: Pm, b: Pm) -> (Pm, u64) {
         }
         carry |= u64::from(over) << i;
     }
-    (Pm { mag: U8x64::from_array(mag), pos }, carry)
+    (
+        Pm {
+            mag: U8x64::from_array(mag),
+            pos,
+        },
+        carry,
+    )
 }

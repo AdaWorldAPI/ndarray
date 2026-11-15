@@ -1,4 +1,5 @@
 #![cfg(feature = "std")]
+#![allow(clippy::needless_range_loop)]
 //! Exactness of the `add_pm` probe (`examples/add_pm/pm.rs`): `P × M` lanes
 //! added in place against a decode-to-i32 oracle.
 
@@ -20,12 +21,20 @@ fn block_of(codes: &[u16]) -> Pm {
         mag[i] = (c & 0xff) as u8;
         pos |= u64::from(c >> 8 & 1) << i;
     }
-    Pm { mag: U8x64::from_array(mag), pos }
+    Pm {
+        mag: U8x64::from_array(mag),
+        pos,
+    }
 }
 
 /// Every (a, b) codeword pair, 64 per block.
-fn all_pairs() -> Vec<(Pm, Pm, Vec<(u16, u16)>)> {
-    let pairs: Vec<(u16, u16)> = (0..512u16).flat_map(|a| (0..512u16).map(move |b| (a, b))).collect();
+/// A block pair and the codeword pair of each of its lanes.
+type PairBlock = (Pm, Pm, Vec<(u16, u16)>);
+
+fn all_pairs() -> Vec<PairBlock> {
+    let pairs: Vec<(u16, u16)> = (0..512u16)
+        .flat_map(|a| (0..512u16).map(move |b| (a, b)))
+        .collect();
     pairs
         .chunks(64)
         .map(|c| {
@@ -108,7 +117,11 @@ impl Rng {
                 let m = (self.next() % (u64::from(max) + 1)) as u16;
                 let p = (self.next() & 1) as u16;
                 // a quarter never touched
-                if self.next() % 4 == 0 { 0 } else { m | p << 8 }
+                if self.next().is_multiple_of(4) {
+                    0
+                } else {
+                    m | p << 8
+                }
             })
             .collect();
         block_of(&codes)
@@ -172,7 +185,10 @@ fn a_fold_with_the_carry_escape_is_exact() {
                 pos |= 1 << i;
             }
         }
-        acc = Pm { mag: U8x64::from_array(mag), pos };
+        acc = Pm {
+            mag: U8x64::from_array(mag),
+            pos,
+        };
     }
     for i in 0..64 {
         let got = lane(acc, i).map(|v| i64::from(v) + wide[i]);
