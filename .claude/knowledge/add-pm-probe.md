@@ -48,7 +48,7 @@ escalation.
 
 | test | what |
 |---|---|
-| `every_codeword_pair_matches_the_i32_oracle` | all 512 × 512 pairs; carry count = exactly the touched same-polarity pairs with \|a\|+\|b\| > 255 (64,770) |
+| `every_codeword_pair_matches_the_i32_oracle` | all 512 × 512 pairs; carry count = exactly the touched same-polarity pairs with \|a\|+\|b\| > 255 (65,280 = 2 × 32,640) |
 | `never_touched_comes_out_only_of_two_never_touched_inputs` | touched(out) = touched(a) \| touched(b), all pairs |
 | `a_touched_zero_is_plus_zero` | −5 + +5, +0 + +0, −255 + +255 give `P=1, M=0` |
 | `add_pm_equals_the_decode_path_on_every_pair` | bit-identical to decode → i32 → encode |
