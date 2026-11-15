@@ -1,3 +1,207 @@
+## 2026-11-14 — RESULT: bit-plane and Abakus refresh (pre-registered below)
+
+Six refresh variants interleaved per sample (rotated order), median of 31 x
+2,000, three runs per tier. AVX-512 run 2 was disturbed (half and full rows
+inflated in every column); runs 1 and 3 quoted. ns per tile:
+
+| tier | tile | set bits | walk x1 (I32x16) | planes U64x8 | Abakus U64x8 |
+|---|---|---|---|---|---|
+| AVX-512 | empty | 0 | 36.2 to 36.6 | 2,110 to 2,130 | 2,118 to 2,513 |
+| | 1/64 | 54 | 70.0 to 72.2 | 2,064 to 2,110 | 2,119 to 2,421 |
+| | 1/2 | 2,027 | 1,584 to 1,624 | 2,127 to 2,187 | 2,177 to 2,775 |
+| | 3/4 | 3,138 | 2,294 to 2,309 | 2,091 to 2,107 | 2,119 to 2,474 |
+| | full | 4,096 | 2,780 to 3,262 | 2,115 to 2,521 | 2,485 to 2,605 |
+| AVX2 | 1/2 | 2,027 | 1,694 to 2,568 | 6,135 to 8,454 | 4,693 to 6,271 |
+| | full | 4,096 | 3,286 to 3,401 | 6,088 to 6,542 | 4,678 to 4,954 |
+
+- R1 exact: holds. Every single cell, empty, full, 200 random tiles, the
+  extreme uniform weights incl. negative and -1. Disables, each red: sign
+  plane added instead of subtracted (1 test), Abakus drops the sixteens
+  column (2), Abakus keeps the carry in its own column (2), planes skip the
+  upper 8 lanes (1).
+- R2 density-independent within 10%: holds on AVX-512 (empty 2,110 to 2,130,
+  full 2,115 to 2,521 incl. the disturbed run) and AVX2.
+- R3 planes below 1,000 ns at half density: FAILED, kill hit. Planes are
+  2,127 to 2,187 ns, slower than the walk (0.74x to 0.85x).
+- R4 planes lose at 1/64: holds, by about 30x.
+- R5 Abakus no faster than planes on AVX-512: holds (0.79x to 1.00x).
+- R6 Abakus faster than planes on AVX2: holds, 1.30x to 1.46x, every density.
+
+Crossover on AVX-512: planes beat the walk from about 3/4 density
+(3/4: 1.10x; full: 1.29x to 1.31x in the undisturbed runs). On AVX2 the walk
+wins at every density (planes 0.01x to 0.55x of the walk's speed).
+
+Why the planes cost what they cost (arithmetic, not measured per port): the
+work is fixed at 16 planes x 64 words x 2 vectors = 2,048 `U64x8`
+and+popcnt+add per refresh, i.e. all 4,096 cells x 16 lanes x 16 bits are
+touched whether set or not; the walk touches one 32-byte row per SET bit.
+The planes only pay off where most cells are set.
+
+Decision: keep both in the lab as measured alternatives. The walk stays the
+reference refresh below about 3/4 density; on AVX-512 a dense tile could
+switch to planes, which is a measured dispatch, not a replacement. The
+Abakus counter is the better form wherever the vector popcount is emulated.
+
+## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1, bit-plane refresh (per-bit addressing)
+
+Instead of walking set bits and gathering weight rows, transpose the weights
+into bit planes: `plane[b][k][j]` is a `u64` whose bit `r` is bit `b` of
+`w[k][r][j]` (two's complement `i16`, `b < 16`). Then
+`h[j] = bias[j] + Σ_{b<15} 2^b·n[b][j] − 2^15·n[15][j]`, with
+`n[b][j] = Σ_k popcount(tile[k] & plane[b][k][j])`. The tile bit is read in
+place as the address; no row is gathered. Planes are 131,072 B, the same
+bytes as the weights, transposed once per weight set (not timed).
+
+Routes, both over `U64x8` (8 output lanes `j` per vector), no zero-word skip,
+so the cost is independent of density:
+- G-P1 `nnue_refresh_planes`: `n += popcnt(splat(tile[k]) & plane)`.
+- G-P2 `nnue_refresh_abakus`: the Abakus column counter. Masks are added
+  into carry-save columns ones/twos/fours/eights/sixteens with the full-adder
+  law (`ternlog` 0x96 sum, 0xE8 carry: the carry moves to the adjacent
+  column), Harley-Seal over groups of 16 words; one popcount per column
+  at the end instead of one per word.
+
+Predictions:
+- R1 exact: both equal the per-cell oracle on every corpus (incl. weights
+  with the sign bit set, i.e. negative weights).
+- R2 G-P1 time is density-independent within 10% (empty vs full).
+- R3 AVX-512 (vpopcntdq): G-P1 half tile below 1,000 ns, faster than the
+  gather walk x1 (1,560 ns). Kill: G-P1 slower than x1 at half density.
+- R4 crossover: G-P1 loses to x1 at density 1/64 (54 set bits, ~60 ns).
+- R5 AVX-512: G-P2 no faster than G-P1 (vpopcntq is one instruction, so
+  saving popcounts buys nothing).
+- R6 AVX2 tier (config-v3, `U64x8::popcnt` is 8 scalar `count_ones`): G-P2
+  faster than G-P1. Kill: G-P2 slower than G-P1 on AVX2.
+
+## 2026-11-14 — RESULT: multi-accumulator refresh (pre-registered below) — hypothesis FALSIFIED
+
+Same bench, four refresh variants interleaved per sample with a rotated
+order, AVX-512, three runs (ns per tile, median of 31 x 2,000):
+
+| tile | set bits | x1 | x2 | x4 |
+|---|---|---|---|---|
+| empty | 0 | 18.3 to 19.1 | 49.8 to 64.9 | 66.1 to 68.5 |
+| 1/2 | 2,027 | 1,559 to 1,562 | 1,616 to 1,620 | 2,510 to 2,512 |
+| full | 4,096 | 2,785 to 2,804 | 3,077 to 3,098 | 4,773 to 4,813 |
+
+- Q1 exact: holds (both variants against the per-cell oracle on every corpus;
+  disable "simd2 drops the second accumulator" turns 2 tests red; the
+  single-cell tiles never reach the second accumulator).
+- Q2 x2 at least 1.3x faster: FAILED, and the kill is hit: x2 is 0.96x of x1
+  on the half tile, 0.90x on the full tile. The refresh is not latency-bound
+  on the add chain.
+- Q3 x4 at most 1.15x faster than x2: holds trivially; x4 is 0.64x of x2.
+- Q4 empty tile within 5 ns: FAILED, +31 to +46 ns for x2.
+
+Disassembly (objdump): the x1 inner loop is six instructions per set bit
+(`tzcnt`, `shl`, `vpmovsxwd` from memory, `vpaddd`, `blsr`, `jne`); the value
+carried between iterations is the bit mask through `blsr`, not only the sum.
+x2 is 70 instructions with an extra branch per bit pair; x4 is 85 with its
+accumulator array spilled (`vmovdqa` to and from the stack, `push`/`pop`).
+What does bound x1 (the widening load's port, or one mispredicted branch at
+each word end) is NOT measured; no hardware counters on this host.
+
+Kept in the lab as a recorded negative result; x1 stays the reference.
+
+## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1 follow-up, multi-accumulator refresh
+
+Hypothesis: refresh (about 0.77 ns per set bit, one `vpaddd` chain on one
+`I32x16`) is latency-bound on that chain, not bound by loads or by the bit
+walk. Variants, same weights and tile, sums added at the end:
+- `nnue_refresh_simd2`: two `I32x16` accumulators; consecutive set bits of a
+  word alternate between them.
+- `nnue_refresh_simd4`: four accumulators, same rule.
+
+Predictions (AVX-512, half-full tile, 2,027 set bits; baseline I32x16 1,555 ns):
+- Q1 exact: both equal the per-cell oracle on every corpus route G uses.
+- Q2 two accumulators: 1.3x to 2x faster than one. Kill (hypothesis wrong):
+  below 1.15x.
+- Q3 four accumulators: no more than 1.15x faster than two (the add chain is
+  no longer the limit at two; loads of a 32-byte row per bit take over).
+- Q4 empty tile: no slower than one accumulator by more than 5 ns (the extra
+  setup is three zero vectors and two adds).
+
+## 2026-11-14 — RESULT: D-U64X64-NNUE-1 (pre-registered below)
+
+Lab route G, `examples/u64x64/nnue.rs`; tests `tests/u64x64_nnue.rs` (10);
+bench `cargo run --release --example u64x64_nnue --features std`. Tier read
+from the binary: avx512f=true, avx512bw=true, avx512vpopcntdq=true. Units:
+ns per tile or per update, median of 31 samples x 2,000 calls.
+
+| prediction | result |
+|---|---|
+| P1 exact on 4,096 single cells, empty, full, 200 random tiles | holds, all four routes against the per-cell `i64` oracle |
+| P2 1,000 mixed updates match a refresh; undo returns the start | holds; 300+ updates turned cells on and off together |
+| P3 no allocation in refresh or update | holds (per-thread counter, shown live) |
+| P4 1-bit update ≥100x cheaper than a half-tile refresh | MISSED: 58x (26.6 ns vs 1,555 ns). The update scans all 64 words; that floor is about 18 to 23 ns, the cost of refreshing an empty tile |
+| P4 8-bit update ≥20x; kill below 5x | holds: 37x scattered, 48x in one word |
+| P5 `I32x16` refresh ≥2x scalar on a half tile; kill if slower | MISSED, kill not hit: 1.06x. LLVM compiles the scalar 16-lane add to the same `vpmovsxwd` + `vpaddd` (objdump), so both routes are SIMD on AVX-512 |
+| P6 a tile is a set; a bag with a repeated edge differs | holds (pinned counterexample) |
+
+Refresh cost scales with set bits: 17.7 ns empty, 58.7 ns at 54 bits, 1,555 ns
+at 2,027, 2,684 ns full (about 0.6 to 0.8 ns per set bit, one dependent add
+per bit on one accumulator). Update, half-full tile: 1 bit 26.6 ns, 8 bits
+42.6 ns scattered / 32.4 ns in one word, 64 bits 123.3 ns scattered / 54.3 ns
+in one word; one cell toggled repeatedly 28.7 ns.
+
+Resident: weights 131,072 B (4,096 x 16 i16; fits L2, not L1), tile 512 B,
+accumulator 64 B; scratch 0 B.
+
+Disable runs, all red: update forgets removals (3 tests), refresh skips bit 63
+(7), SIMD refresh drops the bias (5), row-order check removed (1), `i16::MIN`
+admitted (1), update ignores word 0 (3).
+
+Not measured: AVX2, NEON, wasm and scalar tiers; two-accumulator refresh (the
+per-bit cost looks latency-bound); a source with real FK fan-out.
+
+Haiku run: substrate-mapper over `examples/u64x64/` (11 files read in full). 2 items checked against source (`route_b.rs:387-389` text; `fixture.rs:360` `Weights`), 0 wrong; it self-corrected 2 of its own lines. Not relied on for any conclusion: the lab was also read directly.
+
+Side finding: `masked_group_count_u32` counts into the caller's `i64` with
+`wrapping_add(1)`. Exact within one call (a wrap needs 2^63 rows) but a
+caller that accumulates across calls inherits silent wrapping.
+
+## 2026-11-14 — PRE-REGISTRATION: D-U64X64-NNUE-1, an NNUE-style accumulator over a bound 64×64 Boolean tile
+
+Question: can a source-issued `BitTile` (`[u64; 64]`, 512 B, 4,096 cells,
+word `k` = category, bit `r` = row; `examples/u64x64/fixture.rs`) drive an
+exact, incrementally updatable weighted accumulator
+`h[j] = bias[j] + Σ_{(k,r) set} w[k][r][j]`, `j < 16`?
+
+Kinds kept apart: a bit is presence (set semantics, no sign, no count); a
+weight is a signed `i16`; the accumulator is `i32`. Bound: `|bias| <= 2^15`
+and `|w| <= 2^15 - 1`, so `|h| < 2^15 + 4096·2^15 = 2^27 + 2^15`; no `i32`
+overflow is possible, enforced by the weight constructor, not by wrapping.
+
+Routes (lab route G, `examples/u64x64/nnue.rs`; no public type, no `src/` edit):
+- G-A oracle (test file only): every one of the 4,096 cells read with
+  `(word >> r) & 1`, sums in `i64`.
+- G-B refresh: walk set bits (`trailing_zeros`), scalar `i32` adds.
+- G-C update: `d = old ^ new`, `on = d & new`, `off = d & old`; add `on`
+  rows, subtract `off` rows.
+- G-D refresh and update with `I32x16::from_i16_slice` + `Add`/`Sub`
+  (existing facade, no new primitive).
+- Bound entry points take `fixture::Bound`; an update additionally refuses two
+  frames from different sources, shapes or row orders. Versions may differ:
+  an update is between versions.
+
+Predictions and kill conditions:
+- P1 exact: G-B, G-C, G-D equal G-A on every single-cell tile (4,096), empty,
+  full, and 200 random tiles at densities 1/64, 1/4, 1/2, 3/4. Kill: any
+  mismatch.
+- P2 update chains: 1,000 random toggles applied incrementally equal a fresh
+  refresh after every step; toggling back to the start returns the start
+  accumulator exactly. Kill: any mismatch.
+- P3 no allocation inside refresh or update (counting allocator). Kill: any.
+- P4 cost: refresh scales with set bits, update with changed bits. On a
+  half-full tile, a 1-bit update is at least 100× cheaper than a refresh and
+  an 8-bit update at least 20×. Kill: update not at least 5× cheaper than
+  refresh at 8 changed bits.
+- P5 G-D refresh at least 2× faster than G-B on a half-full tile (AVX-512).
+  Kill: G-D slower than G-B.
+- P6 multiplicity: a Boolean tile cannot carry repeated edges; a bag of
+  duplicate (k, r) edges gives `Σ c·w`, which the tile path does not equal.
+  This is a counterexample to pin, not a defect to fix.
+
 ## 2026-11-14 — RESULT: power sums and extrema of a `u8` lane from per-code counts (pre-registered below)
 
 Functions: `masked_code_counts_u8`, `code_power_sums_u8` (`CodePowerSums`), `masked_first_row_of_code_u8`.

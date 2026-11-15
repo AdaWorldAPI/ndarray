@@ -101,6 +101,11 @@ path = "examples/u64x64/main.rs"
 required-features = ["std"]
 
 [[example]]
+name = "u64x64_nnue"
+path = "examples/u64x64/nnue_main.rs"
+required-features = ["std"]
+
+[[example]]
 name = "cpu_guard_probe"
 required-features = ["std"]
 
