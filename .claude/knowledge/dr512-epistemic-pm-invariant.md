@@ -14,6 +14,20 @@ or DT64 production dispatch.
 | 1 | 0 | valid **+0** |
 | 1 | 1..255 | positive numeric value +1..+255 |
 
+**What "DR512" names (DECISION, 2026-11-15).** The *representation*: 512
+counts codewords (511 values plus never touched). It does not count positions
+or register bits, and it is unrelated to lance-graph's DR64/DR256 (position
+counts) and to `dt64::dr` (addressing, which holds no value). The *arithmetic*
+over these lanes is Abakus `pm` (`ndarray::hpc::abakus::pm`: `add_pm`,
+`neg_pm`, `sub_pm`); call it that, not "DR512 arithmetic". Elsewhere, "DR512"
+is always qualified ("DR512 lanes", "the DR512 codeword").
+
+**Never touched is an identity in arithmetic and NaN after decoding.**
+`add_pm(⊥, x) = x`, while `Codec9::decode(⊥)` is `NaN`, and NaN absorbs. So
+`decode(add_pm(⊥, +5)) = 5`, but `decode(⊥) + decode(+5) = NaN`. Sum in the
+lanes first, then decode. The difference is deliberate, and a test in
+`ndarray::hpc::abakus::pm` pins it.
+
 One u8 magnitude plus **one** presence bit per numeric row:
 64 magnitudes + one u64 presence word = 72 bytes per 64 rows;
 512 distinct codewords, exactly 511 signed numeric values and one

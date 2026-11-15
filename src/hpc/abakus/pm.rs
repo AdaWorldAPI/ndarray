@@ -20,6 +20,13 @@
 //! [`PmSum::into_saturated_parts`], whose name says what they are. The caller
 //! applies the exact value of each carry lane through a wider path.
 //!
+//! **Never touched is an identity here, and NaN after decoding.**
+//! `add_pm(never_touched, x)` is `x`, but [`Codec9::decode`] turns never
+//! touched into `NaN`, which absorbs: `decode(add_pm(⊥, +5))` is `5` while
+//! `decode(⊥) + decode(+5)` is `NaN`. Add in the lanes, then decode.
+//!
+//! [`Codec9::decode`]: crate::hpc::codec9::Codec9::decode
+//!
 //! Proven in `tests/add_pm.rs` (every 512 × 512 codeword pair against an
 //! `i32` oracle, for both operations) on the AVX-512, AVX2, AVX, x86-64-v2,
 //! NEON and wasm32 realizations. Experimental, see [`super`].
@@ -149,6 +156,24 @@ pub fn sub_pm(a: Pm, b: Pm) -> PmSum {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Never touched is the identity of `add_pm`, and NaN once decoded: the
+    /// order "add, then decode" is not the order "decode, then add".
+    #[test]
+    fn never_touched_is_an_identity_before_decode_and_nan_after() {
+        use crate::hpc::codec8::TiesEven;
+        use crate::hpc::codec9::{Codec9Runtime, EpiLane9};
+        let c = Codec9Runtime::<TiesEven>::new(1.0).unwrap();
+        let five = c.encode_touched(5.0).unwrap();
+        let sum = add_pm(block(&[None]), block(&[Some(5)]));
+        assert_eq!(sum.lane(0), PmLane::Exact(5));
+        let (s, _) = sum.into_saturated_parts();
+        let lane = EpiLane9::from_codeword(u16::from(s.mag.to_array()[0]) | (u16::from(s.pos & 1 == 1) << 8)).unwrap();
+        assert_eq!(c.decode(lane), 5.0, "add, then decode");
+        assert_eq!(lane, five);
+        let decoded_first = c.decode(EpiLane9::NEVER_TOUCHED) + c.decode(five);
+        assert!(decoded_first.is_nan(), "decode, then add");
+    }
 
     fn block(vals: &[Option<i16>]) -> Pm {
         let mut mag = [0u8; 64];

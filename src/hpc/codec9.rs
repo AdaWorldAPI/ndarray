@@ -133,6 +133,41 @@ pub enum Codec9Error {
     InvalidScale,
     /// Batch slices whose lengths do not describe the same lanes.
     LengthMismatch,
+    /// A checked encode whose quantized value lies outside `i64`.
+    OutOfRange,
+}
+
+/// A touched value from a checked encode: a lane when its quantized
+/// magnitude fits 255, or its exact quantized value when it does not.
+///
+/// [`Codec9::encode_touched`] saturates at magnitude 255; the checked form
+/// hands the value back instead, so a wide path (an exact escape) can carry
+/// it, the way `abakus::pm` hands back a carry lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quantized9 {
+    /// The lane, identical to what [`Codec9::encode_touched`] returns.
+    Lane(EpiLane9),
+    /// The exact quantized value, `|v| > 255`.
+    Wide(i64),
+}
+
+/// The one checked encoder both scale forms call.
+#[inline(always)]
+fn encode_checked_with_scale<R: NearestRounding9>(value: f32, scale: f32) -> Result<Quantized9, Codec9Error> {
+    if !value.is_finite() {
+        return Err(Codec9Error::NonFinite);
+    }
+    let quantized = R::round(value / scale);
+    if quantized.abs() <= 255.0 {
+        return encode_with_scale::<R>(value, scale).map(Quantized9::Lane);
+    }
+    // -2^63 and 2^63 are exact in f32; i64 holds [-2^63, 2^63).
+    const TWO_63: f32 = 9_223_372_036_854_775_808.0;
+    if (-TWO_63..TWO_63).contains(&quantized) {
+        Ok(Quantized9::Wide(quantized as i64))
+    } else {
+        Err(Codec9Error::OutOfRange)
+    }
 }
 
 /// The one encoder both scale forms call.
@@ -193,6 +228,15 @@ impl<R: NearestRounding9, C: Calibration> Codec9<R, C> {
         encode_with_scale::<R>(value, C::SCALE)
     }
 
+    /// Encodes a touched finite value without saturating: a lane when the
+    /// quantized magnitude fits 255 (the same lane as
+    /// [`Self::encode_touched`]), otherwise the exact quantized value.
+    /// Refuses a value whose quantized form lies outside `i64`.
+    pub fn encode_touched_checked(value: f32) -> Result<Quantized9, Codec9Error> {
+        Self::assert_calibration();
+        encode_checked_with_scale::<R>(value, C::SCALE)
+    }
+
     /// Decodes -0 into a floating NaN and all other codes using calibration.
     /// This is an explicit numeric view, not a permission or NULL decision.
     #[must_use]
@@ -245,6 +289,12 @@ impl<R: NearestRounding9> Codec9Runtime<R> {
     /// Encodes one touched finite value; see [`Codec9::encode_touched`].
     pub fn encode_touched(&self, value: f32) -> Result<EpiLane9, Codec9Error> {
         encode_with_scale::<R>(value, self.scale)
+    }
+
+    /// Encodes one touched finite value without saturating; see
+    /// [`Codec9::encode_touched_checked`].
+    pub fn encode_touched_checked(&self, value: f32) -> Result<Quantized9, Codec9Error> {
+        encode_checked_with_scale::<R>(value, self.scale)
     }
 
     /// Decodes one lane; never-touched becomes NaN.
@@ -312,6 +362,37 @@ mod tests {
     }
     type Even = Codec9<TiesEven, Unit>;
     type Away = Codec9<TiesAway, Unit>;
+
+    /// Within ±255 the checked encoder returns exactly the lane the
+    /// saturating one does, the -0.49999 → +0 rule included.
+    #[test]
+    fn checked_encode_matches_encode_touched_within_range() {
+        let mut v = -255.4f32;
+        while v <= 255.4 {
+            assert_eq!(Even::encode_touched_checked(v), Even::encode_touched(v).map(Quantized9::Lane), "{v}");
+            assert_eq!(Away::encode_touched_checked(v), Away::encode_touched(v).map(Quantized9::Lane), "{v}");
+            v += 0.1;
+        }
+        let zero = Even::encode_touched_checked(-0.499_99).unwrap();
+        assert_eq!(zero, Quantized9::Lane(EpiLane9::from_codeword(0x100).unwrap()), "-0.49999 is +0");
+    }
+
+    /// Past ±255 it hands back the exact quantized value where the saturating
+    /// encoder clamps; outside i64 it refuses.
+    #[test]
+    fn checked_encode_escapes_instead_of_saturating() {
+        assert_eq!(Even::encode_touched(300.0).unwrap().value(), Some(255), "saturates");
+        assert_eq!(Even::encode_touched_checked(300.0), Ok(Quantized9::Wide(300)));
+        assert_eq!(Even::encode_touched_checked(-256.0), Ok(Quantized9::Wide(-256)));
+        assert_eq!(Even::encode_touched_checked(255.5), Ok(Quantized9::Wide(256)), "ties even");
+        assert_eq!(Even::encode_touched_checked(-9_223_372_036_854_775_808.0), Ok(Quantized9::Wide(i64::MIN)));
+        assert_eq!(Even::encode_touched_checked(9_223_372_036_854_775_808.0), Err(Codec9Error::OutOfRange));
+        assert_eq!(Even::encode_touched_checked(1e30), Err(Codec9Error::OutOfRange));
+        assert_eq!(Even::encode_touched_checked(f32::NAN), Err(Codec9Error::NonFinite));
+        let rt = Codec9Runtime::<TiesEven>::new(0.5).unwrap();
+        assert_eq!(rt.encode_touched_checked(200.0), Ok(Quantized9::Wide(400)));
+        assert_eq!(rt.encode_touched_checked(-0.2), Ok(Quantized9::Lane(EpiLane9::from_codeword(0x100).unwrap())));
+    }
 
     #[test]
     fn all_512_codewords_are_unique_and_absence_is_exactly_zero_and_zero() {
