@@ -1,3 +1,18 @@
+## 2026-11-15 — RESULT: D-ADD-PM, Codec9 `P × M` lanes added in place
+
+`examples/add_pm/` + `tests/add_pm.rs`; doc `.claude/knowledge/add-pm-probe.md`.
+Sign-magnitude addition of DR512 lanes on the `U8x64` facade, no decode:
+untouched is the identity (no blend needed: the never-touched code is a zero
+magnitude), a touched zero is +0, same-polarity sums past 255 return in a
+carry mask. All 512 × 512 pairs exact against an i32 oracle (64,770 carry
+pairs), bit-identical to the decode path, associative off the carry lanes,
+and a carry-escaped fold is exact. Disables D1–D4 each red. Cost per 64
+lanes: AVX-512 11.9 ns vs 89.7 ns decode; AVX2 285 ns vs 134 ns, because the
+AVX2 `U8x64` `mask_blend` / `saturating_add` / `saturating_sub` are scalar
+loops (facet-stride burn-down). Verdict ADOPT-LAB; nothing added to `codec9`
+or the facade. Loose ends: the AVX2 burn-down, the lance-graph end-to-end
+fold, subtraction.
+
 ## 2026-11-14 — RESULT: bit-plane and Abakus refresh (pre-registered below)
 
 Six refresh variants interleaved per sample (rotated order), median of 31 x
