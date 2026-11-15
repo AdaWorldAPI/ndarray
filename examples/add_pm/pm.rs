@@ -17,6 +17,9 @@
 //! The carry mask is the exact-escape signal Codec9's own encoder lacks (it
 //! saturates silently): a caller applies the exact sum of those lanes
 //! through a wider path. Off the carry lanes the result is exact.
+//!
+//! Subtraction is the same addition of the polarity-negated operand
+//! ([`neg_pm`], [`sub_pm`]). XOR governs polarity; magnitudes stay unsigned.
 use ndarray::simd::U8x64;
 
 /// 64 `P × M` lanes.
@@ -69,6 +72,27 @@ pub fn add_pm(a: Pm, b: Pm) -> (Pm, u64) {
     (Pm { mag, pos }, carry)
 }
 
+/// `-b` lane-wise: the polarity bit flips on lanes with a magnitude.
+///
+/// `P_¬b = P_b ⊕ (M_b ≠ 0)`. A zero magnitude keeps its polarity, so the
+/// never-touched code (`P=0, M=0`) stays never touched and `+0` stays `+0`:
+/// `-0` is never produced, and remains only the never-touched sentinel.
+#[inline(always)]
+pub fn neg_pm(b: Pm) -> Pm {
+    let nonzero = !b.mag.cmpeq_mask(U8x64::splat(0));
+    Pm {
+        mag: b.mag,
+        pos: b.pos ^ nonzero,
+    }
+}
+
+/// `a ⊖ b` lane-wise: `a ⊕ (-b)`, with `add_pm`'s carry contract. There is
+/// no separate subtractor.
+#[inline(always)]
+pub fn sub_pm(a: Pm, b: Pm) -> (Pm, u64) {
+    add_pm(a, neg_pm(b))
+}
+
 // ------------------------------------------------------------------ scalar reference
 // Decode to i32 and back: the path `add_pm` avoids, and the oracle it is checked by.
 
@@ -93,6 +117,12 @@ pub fn add_ref(a: Option<i32>, b: Option<i32>) -> (Option<i32>, bool) {
         (None, x) | (x, None) => (x, false),
         (Some(x), Some(y)) => (Some(x + y), (x + y).abs() > 255),
     }
+}
+
+/// The reference difference of one lane: `a - b`, never touched only when
+/// both are, and overflow outside ±255.
+pub fn sub_ref(a: Option<i32>, b: Option<i32>) -> (Option<i32>, bool) {
+    add_ref(a, b.map(|y| -y))
 }
 
 /// `add_pm` by decode → i32 → encode, 64 lanes. Carry lanes are saturated.

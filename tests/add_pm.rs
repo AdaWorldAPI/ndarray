@@ -6,8 +6,10 @@
 #[path = "../examples/add_pm/pm.rs"]
 mod pm;
 
+use ndarray::hpc::codec8::TiesEven;
+use ndarray::hpc::codec9::Codec9Runtime;
 use ndarray::simd::U8x64;
-use pm::{add_decoded, add_pm, add_ref, decode_lane, touched, Pm};
+use pm::{add_decoded, add_pm, add_ref, decode_lane, neg_pm, sub_pm, sub_ref, touched, Pm};
 
 fn lane(x: Pm, i: usize) -> Option<i32> {
     decode_lane(x.mag.to_array()[i], x.pos >> i & 1 == 1)
@@ -195,4 +197,142 @@ fn a_fold_with_the_carry_escape_is_exact() {
         assert_eq!(got, truth[i], "lane {i}");
     }
     assert!(escapes > 0, "anti-vacuity: the stream must overflow");
+}
+
+// ------------------------------------------------------------------ subtraction
+
+#[test]
+fn negation_of_every_codeword_matches_the_oracle() {
+    let codes: Vec<u16> = (0..512).collect();
+    for c in codes.chunks(64) {
+        let b = block_of(c);
+        let n = neg_pm(b);
+        assert_eq!(n.mag, b.mag, "negation keeps the magnitude");
+        for i in 0..c.len() {
+            assert_eq!(lane(n, i), lane(b, i).map(|y| -y), "code {:#x}", c[i]);
+        }
+        assert_eq!(touched(n), touched(b), "touched is unchanged");
+    }
+    // the never-touched code and +0 are fixed points, -0 is never produced
+    let z = block_of(&[0, 0x100]);
+    let n = neg_pm(z);
+    assert_eq!((n.mag.to_array()[0], n.pos & 1), (0, 0), "never touched stays never touched");
+    assert_eq!((n.mag.to_array()[1], n.pos >> 1 & 1), (0, 1), "+0 stays +0");
+}
+
+#[test]
+fn every_codeword_pair_difference_matches_the_i32_oracle() {
+    let (mut over, mut checked) = (0usize, 0usize);
+    for (a, b, codes) in all_pairs() {
+        let (s, carry) = sub_pm(a, b);
+        for i in 0..codes.len() {
+            let (want, overflow) = sub_ref(lane(a, i), lane(b, i));
+            assert_eq!(carry >> i & 1 == 1, overflow, "carry, codes {:?}", codes[i]);
+            checked += 1;
+            if overflow {
+                over += 1;
+                assert_eq!(s.mag.to_array()[i], 255, "a carry lane saturates");
+                assert_eq!(lane(s, i).map(i32::signum), want.map(i32::signum), "{:?}", codes[i]);
+            } else {
+                assert_eq!(lane(s, i), want, "codes {:?}", codes[i]);
+            }
+        }
+        assert_eq!(touched(s), touched(a) | touched(b), "touched(a - b)");
+    }
+    assert_eq!(checked, 512 * 512);
+    // opposite-polarity pairs with |a| + |b| > 255 carry under subtraction
+    let expect: usize = (1..=255i32)
+        .flat_map(|x| (1..=255i32).map(move |y| usize::from(x + y > 255)))
+        .sum::<usize>()
+        * 2;
+    assert_eq!(over, expect, "carry count");
+}
+
+#[test]
+fn sub_pm_equals_negate_then_add_on_every_pair() {
+    for (a, b, _) in all_pairs() {
+        assert_eq!(sub_pm(a, b), add_pm(a, neg_pm(b)));
+    }
+}
+
+/// The four cases the contract names, on one block.
+#[test]
+fn the_four_mandatory_cases() {
+    // -5 + +5 = +0
+    let (s, c) = add_pm(block_of(&[5]), block_of(&[0x105]));
+    assert_eq!((c & 1, s.mag.to_array()[0], s.pos & 1), (0, 0, 1), "-5 + +5 = +0");
+
+    // -0.499999 quantizes to +0 (scale 1, ties to even), through the batch
+    // encoder into a block, then survives an addition with never touched
+    let codec = Codec9Runtime::<TiesEven>::new(1.0).unwrap();
+    let mut mag = [0u8; 64];
+    let mut pos = [0u64; 1];
+    codec
+        .encode_touched_batch(&[-0.499_999f32; 64], &mut mag, &mut pos)
+        .unwrap();
+    let q = Pm {
+        mag: U8x64::from_array(mag),
+        pos: pos[0],
+    };
+    assert_eq!((q.mag.to_array()[0], q.pos & 1), (0, 1), "-0.499999 is +0, not -0");
+    let (s, _) = add_pm(q, Pm::untouched());
+    assert_eq!(touched(s), u64::MAX, "still touched");
+    assert!(s.mag.to_array().iter().all(|&m| m == 0) && s.pos == u64::MAX);
+
+    // +0 - +0 = +0
+    let (s, c) = sub_pm(block_of(&[0x100]), block_of(&[0x100]));
+    assert_eq!((c & 1, s.mag.to_array()[0], s.pos & 1), (0, 0, 1), "+0 - +0 = +0");
+
+    // never_touched - never_touched = never_touched
+    let (s, c) = sub_pm(Pm::untouched(), Pm::untouched());
+    assert_eq!((c, touched(s)), (0, 0), "never touched - never touched");
+}
+
+#[test]
+fn a_difference_fold_with_the_carry_escape_is_exact() {
+    let mut r = Rng(0xD1FF_5EED);
+    let n = 2000;
+    let mut acc = Pm::untouched();
+    let mut wide = [0i64; 64];
+    let mut escaped = 0u64;
+    let mut exact = [None::<i64>; 64];
+    let mut carries = 0;
+    for _ in 0..n {
+        let b = r.block(160);
+        let bm = b.mag.to_array();
+        for i in 0..64 {
+            if let Some(v) = decode_lane(bm[i], b.pos >> i & 1 == 1) {
+                exact[i] = Some(exact[i].unwrap_or(0) - i64::from(v));
+            }
+        }
+        // escaped lanes take the delta exactly; the rest go through sub_pm
+        let off = escaped;
+        let b_in = Pm {
+            mag: U8x64::mask_blend(off, b.mag, U8x64::splat(0)),
+            pos: b.pos & !off,
+        };
+        let before = acc;
+        let (s, carry) = sub_pm(acc, b_in);
+        acc = s;
+        for i in 0..64 {
+            let d = decode_lane(bm[i], b.pos >> i & 1 == 1).map(i64::from);
+            if escaped >> i & 1 == 1 {
+                wide[i] -= d.unwrap_or(0);
+            } else if carry >> i & 1 == 1 {
+                carries += 1;
+                let a = lane(before, i).map(i64::from).unwrap_or(0);
+                wide[i] = a - d.unwrap_or(0);
+                escaped |= 1 << i;
+            }
+        }
+    }
+    for i in 0..64 {
+        let got = if escaped >> i & 1 == 1 {
+            Some(wide[i])
+        } else {
+            lane(acc, i).map(i64::from)
+        };
+        assert_eq!(got, exact[i], "lane {i}");
+    }
+    assert!(carries > 0, "the fold must carry");
 }
