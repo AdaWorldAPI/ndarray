@@ -11,7 +11,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use ndarray::simd::U8x64;
-use pm::{add_decoded, add_pm, Pm};
+use pm::{add_decoded, add_pm, sub_pm, Pm};
 
 fn blocks(n: usize, seed: u64) -> Vec<Pm> {
     let mut s = seed;
@@ -70,5 +70,6 @@ fn main() {
     for _ in 0..2 {
         time("add_pm (in place)", &a, &b, add_pm);
         time("add_decoded (decode -> i32 -> encode)", &a, &b, add_decoded);
+        time("sub_pm (negate, then add_pm)", &a, &b, sub_pm);
     }
 }
