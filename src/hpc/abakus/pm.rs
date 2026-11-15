@@ -33,12 +33,20 @@
 use crate::simd::U8x64;
 
 /// 64 `P × M` lanes.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug)]
 pub struct Pm {
     /// Magnitude per lane.
     pub mag: U8x64,
     /// Polarity per lane; with a zero magnitude, the presence bit.
     pub pos: u64,
+}
+
+// Compared by bytes, not derived: not every realization's `U8x64` is
+// `PartialEq` (the `nightly-simd` one is not).
+impl PartialEq for Pm {
+    fn eq(&self, other: &Self) -> bool {
+        self.pos == other.pos && self.mag.to_array() == other.mag.to_array()
+    }
 }
 
 impl Pm {
