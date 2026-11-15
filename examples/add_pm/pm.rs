@@ -7,7 +7,8 @@
 //! The sum is sign-magnitude addition, with no decode to a signed integer:
 //!
 //! - an untouched lane is the identity (`untouched ⊕ x = x`), and the result
-//!   is touched if either input was;
+//!   is touched if either input was. This needs no blend: the never-touched
+//!   code is a zero magnitude, so the identity is the addition itself;
 //! - same polarity: `M = M_a + M_b`, `P = P_a`; the lanes where that sum
 //!   passes 255 are returned in the carry mask, with `M` saturated at 255;
 //! - opposite polarity: `M = max - min`, `P` from the larger magnitude;
@@ -55,14 +56,13 @@ pub fn add_pm(a: Pm, b: Pm) -> (Pm, u64) {
     let a_larger = a.mag.cmpgt_mask(b.mag);
     let p_opp = (a_larger & a.pos) | (!a_larger & b.pos);
     let mag = U8x64::mask_blend(same, diff, sum);
-    let mut pos = (same & a.pos) | (!same & p_opp);
-    // a touched zero is +0
-    pos |= mag.cmpeq_mask(zero);
-    // untouched is the identity: where b is untouched take a, where a is take b
-    let mag = U8x64::mask_blend(!tb, mag, a.mag);
-    let pos = (tb & pos) | (!tb & a.pos);
-    let mag = U8x64::mask_blend(!ta, mag, b.mag);
-    let pos = (ta & pos) | (!ta & b.pos);
+    let pos = (same & a.pos) | (!same & p_opp);
+    // A zero result is +0 when either input was touched, and stays the
+    // never-touched code when neither was. No identity blend is needed: read
+    // as sign-magnitude, the never-touched code is a zero magnitude, so
+    // `untouched ⊕ x = x` falls out of the addition itself; only this zero
+    // normalization has to know about presence.
+    let pos = pos | (mag.cmpeq_mask(zero) & (ta | tb));
     (Pm { mag, pos }, carry)
 }
 
