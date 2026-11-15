@@ -84,10 +84,10 @@ never flipped (3); flipped only on zero magnitudes (4).
 AVX-512 (native), AVX2 (`config-v3`), AVX (`config-avx`, qemu SandyBridge),
 x86-64-v2 / scalar backend (`config-v2`, qemu Nehalem), NEON (aarch64 cross
 build, qemu), wasm32 +simd128 and wasm32 scalar (wasip1 under node's WASI).
-CI runs the first five rows through `scripts/add-pm-backends.sh`, which fails
-on zero executed tests. The wasm rows ran once by hand: the crate's
-`criterion` dev-dependency does not build for `wasm32-wasip1`, so they were
-built from a copy of the test file in a crate without dev-dependencies.
+CI runs all seven rows through `scripts/add-pm-backends.sh`, which fails on
+zero executed tests. The wasm rows (`wasm`, `wasm-scalar`) run the test
+binary under node's WASI (`scripts/wasi-test-run.mjs`); `criterion`, which
+does not build for `wasm32-wasip1`, is a non-wasm dev-dependency.
 
 ## Cost (ns per 64 lanes, best of 50, 4,096 blocks, L2-resident)
 
@@ -128,8 +128,8 @@ the carry is the escape. Not adopted into `codec9` or the facade.
 - ~~Only addition is covered. Subtraction is addition with the polarity bit
   flipped on touched lanes (an untouched lane must stay untouched); not built.~~
   Done: § Subtraction (the flip is on lanes with a magnitude, which keeps +0 too).
-- Promote `add_pm` / `neg_pm` / `sub_pm` from this example to an experimental
-  `ndarray::hpc::abakus::pm` module (Codec9 keeps the representation), then
-  drop the lab copy in lance-graph `xlog-relcomp-probe`.
-- wasm rows of `scripts/add-pm-backends.sh`: blocked on `criterion` not
-  building for `wasm32-wasip1`.
+- Done: promoted to `ndarray::hpc::abakus::pm` (#433); the lance-graph lab
+  copy is gone (lance-graph #2090).
+- Done: wasm rows of `scripts/add-pm-backends.sh` in CI.
+- Done: `Codec9::encode_touched_checked` hands back the exact value past
+  ±255 (`Quantized9::Wide`), so input has the same escape as arithmetic.
