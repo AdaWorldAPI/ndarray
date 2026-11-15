@@ -84,7 +84,14 @@ the carry is the escape. Not adopted into `codec9` or the facade.
 ## Open
 
 - Burn down the AVX2 array-backed `U8x64` words this uses; then re-time.
-- End to end in lance-graph: fold the triangle-pairing delta stream
-  (D-XLOG-C9-0) with `add_pm` and check the carry lanes equal its escape lanes.
+- ~~End to end in lance-graph: fold the triangle-pairing delta stream
+  (D-XLOG-C9-0) with `add_pm` and check the carry lanes equal its escape lanes.~~
+  Done as lance-graph D-XLOG-PM-1 (#2087), and the comparison as written was
+  wrong: a carry (an addition left ±255) is not an overflow (a net batch
+  delta outside ±255). `+255 +255 −255` carries once and does not overflow.
+  Measured on that stream: batch overflow keys equal D-XLOG-C9-0's escape
+  lanes exactly; carries exceed them by the deltas that came back (churn,
+  batch 65,536: 994 carries − 266 demotions = 728 overflows). Degrees stay
+  exact, with an exact wide escape and demotion back to a lane.
 - Only addition is covered. Subtraction is addition with the polarity bit
   flipped on touched lanes (an untouched lane must stay untouched); not built.
