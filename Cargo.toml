@@ -81,6 +81,11 @@ path = "examples/pof_antennas/main.rs"
 required-features = ["std"]
 
 [[example]]
+name = "add_pm"
+path = "examples/add_pm/main.rs"
+required-features = ["std"]
+
+[[example]]
 name = "u9_abacus"
 path = "examples/u9_abacus/main.rs"
 required-features = ["std"]
