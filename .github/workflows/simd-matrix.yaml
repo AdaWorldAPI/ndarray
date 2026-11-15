@@ -110,6 +110,8 @@ jobs:
         run: CARGO_ARGS='--config .cargo/config-v3.toml' bash scripts/masking-parity.sh native
       - name: codegen witness (avx2, pinned to v3)
         run: CARGO_ARGS='--config .cargo/config-v3.toml' bash scripts/codegen-witness.sh avx2
+      - name: add_pm / sub_pm probe tests (x86-64-v3, pinned)
+        run: bash scripts/add-pm-backends.sh avx2
       - name: AMX realization report (runtime-gated; prints this runner's gates)
         run: cargo run --example amx_realization_report
       - name: AMX encoding + detection tests (no tile op executes)
@@ -302,6 +304,8 @@ jobs:
           # One thread: qemu-user itself has crashed (internal SIGSEGV) under
           # the multithreaded harness while a test was panicking.
           qemu-x86_64-static -cpu SandyBridge "$bin" simd --test-threads=1
+      - name: add_pm / sub_pm probe tests under qemu -cpu SandyBridge
+        run: bash scripts/add-pm-backends.sh avx-qemu
 
   v2:
     # x86-64-v2 realization (SSE4.2, no AVX): `simd.rs` routes it to the
@@ -349,6 +353,8 @@ jobs:
             | jq -r 'select(.executable != null and .target.kind == ["lib"] and .target.name == "ndarray") | .executable')
           # One thread: see the `avx` job.
           qemu-x86_64-static -cpu Nehalem "$bin" simd --test-threads=1
+      - name: add_pm / sub_pm probe tests under qemu -cpu Nehalem
+        run: bash scripts/add-pm-backends.sh v2-qemu
 
   neon:
     # aarch64 realization: cross-build on the x86 runner, run under qemu-user.
@@ -376,6 +382,8 @@ jobs:
         run: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc bash scripts/codegen-witness.sh neon aarch64-unknown-linux-gnu
       - name: NEON asm rung 3
         run: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc bash scripts/neon-asm-rung3.sh
+      - name: add_pm / sub_pm probe tests (aarch64, qemu)
+        run: bash scripts/add-pm-backends.sh neon-qemu
 
   wasm:
     # wasm32 with +simd128 = the `simd_wasm` realization; wasm32 WITHOUT it is
