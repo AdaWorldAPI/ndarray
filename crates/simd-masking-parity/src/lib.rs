@@ -44,6 +44,7 @@
 //! `selfcheck()` (the wasm cdylib export, driven by `run.mjs`) both call
 //! [`run`].
 
+use ndarray::simd::{add_mul_f32, add_mul_f64, mul_add_f32, mul_add_f64, F32x8, F64x4};
 use ndarray::simd::{
     blend_i32, count_gt_i32_at, count_set_at, eq_f32_to_mask, eq_f64_to_mask, eq_i32_to_mask, eq_i32_to_mask_under,
     eq_u32_strided_to_mask, eq_u32_to_mask, eq_u32_to_mask_under, eq_u32_via_to_mask, eq_u64_to_mask, eq_u8_to_mask,
@@ -66,7 +67,7 @@ use ndarray::simd::{
 };
 
 /// Number of check groups [`run`] executes (for the log line only).
-pub const CHECKS: usize = 25;
+pub const CHECKS: usize = 26;
 
 /// The wasm export: identical to [`run`], `extern "C"` so `run.mjs` can call it.
 #[no_mangle]
@@ -83,6 +84,7 @@ pub fn run() -> u32 {
         check_f64x8_compare, check_i8x16_u8x16_lanes, check_care_match16, check_narrow_ladder,
         check_mul_add_single_rounding, check_fixedpoint_requant, check_nan_presence_bijection,
         check_sql_null_predicates, check_lut9, check_lut_u8, check_position_folds, check_count_set_at,
+        check_ieee_bit_exact,
     ];
     for g in groups {
         if let Err(code) = g() {
@@ -3299,6 +3301,217 @@ fn check_sql_null_predicates() -> Result<(), u32> {
     }
     if ieee_not_would_leak < 500 {
         return Err(0x13F3);
+    }
+    Ok(())
+}
+
+// ============================================================================
+// IEEE 754 bit-exactness: the polyfill contract for the float facade
+// ============================================================================
+//
+// Every float method of the facade must return the SAME BITS on every CPU:
+// each operation is one correctly rounded IEEE 754 operation, never an
+// estimate, never a narrow-compute-widen round trip. This group checks that
+// two ways, on whichever realization the build compiled:
+//
+//   1. lane by lane against the scalar IEEE operation (`+ - * /`, `sqrt`,
+//      single-rounded FMA, round-half-even, `floor`, `abs`, `copysign`,
+//      `1/x`, the six compares and the three classifications), and
+//   2. by folding every result into one digest that must equal
+//      [`IEEE_GOLDEN`] — the same constant on AVX-512, AVX2, AVX, x86-64-v2,
+//      NEON, wasm simd128, wasm scalar and the `core::simd` backend. A
+//      realization whose scalar reference itself were off would still be
+//      caught by the constant.
+//
+// What IEEE 754 leaves open, and this group therefore does not pin:
+//   * NaN sign and payload: any NaN counts as the one canonical NaN.
+//   * `simd_min` / `simd_max` of `+0` and `-0`: the lane is skipped.
+//   * `simd_min` / `simd_max` with a NaN operand on the 512-bit types: the
+//     AVX-512 realization is the raw `vminps`/`vmaxps` (second operand), the
+//     others ignore the NaN. Pre-existing and left untouched; skipped here.
+//     The 256-bit types are checked with NaN operands (NaN ignored, as
+//     `f32::min`).
+// Reductions (`reduce_sum`, …) are outside this group: their summation order
+// is a property of the realization.
+
+/// Digest every realization must reproduce (see [`ieee_digest`]).
+pub const IEEE_GOLDEN: u64 = 0xEE52_C9E7_819D_32C3;
+
+/// FNV-1a over the canonical result bits of every operation in the group.
+struct Fnv(u64);
+impl Fnv {
+    fn word(&mut self, x: u64) {
+        for b in x.to_le_bytes() {
+            self.0 ^= u64::from(b);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01B3);
+        }
+    }
+}
+
+fn canon32(x: f32) -> u64 {
+    if x.is_nan() {
+        0x7FC0_0000
+    } else {
+        u64::from(x.to_bits())
+    }
+}
+fn canon64(x: f64) -> u64 {
+    if x.is_nan() {
+        0x7FF8_0000_0000_0000
+    } else {
+        x.to_bits()
+    }
+}
+
+const IEEE_SPECIALS: [f64; 20] = [
+    0.0,
+    -0.0,
+    1.0,
+    -1.0,
+    0.5,
+    1.5,
+    2.5,
+    -2.5,
+    3.0,
+    1e-3,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    f64::NAN,
+    0.1,
+    -7.75,
+    16777217.0,
+    1e30,
+    -1e-30,
+    4.0,
+    1e-45,
+];
+
+macro_rules! ieee_group {
+    ($vec:ident, $elem:ident, $lanes:expr, $canon:ident, $fma:ident, $from_bits:expr, $wide_nan_minmax:expr,
+     $rng:ident, $h:ident, $code:expr) => {{
+        for round in 0..600usize {
+            let gen = |r: &mut SplitMix64, salt: usize| -> [$elem; $lanes] {
+                core::array::from_fn(|i| {
+                    if round % 3 == 0 {
+                        IEEE_SPECIALS[(round + i * 7 + salt * 5) % IEEE_SPECIALS.len()] as $elem
+                    } else {
+                        $from_bits(r.next())
+                    }
+                })
+            };
+            let (a, b, c) = (gen(&mut $rng, 0), gen(&mut $rng, 1), gen(&mut $rng, 2));
+            let (va, vb, vc) = ($vec::from_array(a), $vec::from_array(b), $vec::from_array(c));
+            // (result lanes, scalar IEEE reference lanes)
+            let ops: [([$elem; $lanes], [$elem; $lanes]); 11] = [
+                ((va + vb).to_array(), core::array::from_fn(|i| a[i] + b[i])),
+                ((va - vb).to_array(), core::array::from_fn(|i| a[i] - b[i])),
+                ((va * vb).to_array(), core::array::from_fn(|i| a[i] * b[i])),
+                ((va / vb).to_array(), core::array::from_fn(|i| a[i] / b[i])),
+                (va.sqrt().to_array(), a.map($elem::sqrt)),
+                (va.mul_add(vb, vc).to_array(), core::array::from_fn(|i| $fma(a[i], b[i], c[i]))),
+                (va.round().to_array(), a.map($elem::round_ties_even)),
+                (va.floor().to_array(), a.map($elem::floor)),
+                (va.abs().to_array(), a.map($elem::abs)),
+                (va.copysign(vb).to_array(), core::array::from_fn(|i| a[i].copysign(b[i]))),
+                (va.recip().to_array(), a.map(|x| 1.0 / x)),
+            ];
+            for (k, (got, want)) in ops.iter().enumerate() {
+                for i in 0..$lanes {
+                    // abs and copysign are bit operations: exact even on NaN.
+                    let (g, w) = if k == 8 || k == 9 {
+                        (u64::from(got[i].to_bits()), u64::from(want[i].to_bits()))
+                    } else {
+                        ($canon(got[i]), $canon(want[i]))
+                    };
+                    if g != w {
+                        return Err($code + k as u32);
+                    }
+                    $h.word(g);
+                }
+            }
+            let bit = |f: &dyn Fn(usize) -> bool| -> u64 { (0..$lanes).filter(|&i| f(i)).fold(0, |m, i| m | (1 << i)) };
+            let masks: [(u64, u64); 9] = [
+                (va.simd_eq(vb).to_bitmask().into(), bit(&|i| a[i] == b[i])),
+                (va.simd_ne(vb).to_bitmask().into(), bit(&|i| a[i] != b[i])),
+                (va.simd_lt(vb).to_bitmask().into(), bit(&|i| a[i] < b[i])),
+                (va.simd_le(vb).to_bitmask().into(), bit(&|i| a[i] <= b[i])),
+                (va.simd_gt(vb).to_bitmask().into(), bit(&|i| a[i] > b[i])),
+                (va.simd_ge(vb).to_bitmask().into(), bit(&|i| a[i] >= b[i])),
+                (va.is_nan().to_bitmask().into(), bit(&|i| a[i].is_nan())),
+                (va.is_finite().to_bitmask().into(), bit(&|i| a[i].is_finite())),
+                (va.is_infinite().to_bitmask().into(), bit(&|i| a[i].is_infinite())),
+            ];
+            for (k, (g, w)) in masks.iter().enumerate() {
+                if g != w {
+                    return Err($code + 0x20 + k as u32);
+                }
+                $h.word(*g);
+            }
+            let (mn, mx) = (va.simd_min(vb).to_array(), va.simd_max(vb).to_array());
+            for i in 0..$lanes {
+                let mixed_zero = a[i] == 0.0 && b[i] == 0.0 && a[i].to_bits() != b[i].to_bits();
+                let nan = a[i].is_nan() || b[i].is_nan();
+                if mixed_zero || (nan && !$wide_nan_minmax) {
+                    continue;
+                }
+                if $canon(mn[i]) != $canon(a[i].min(b[i])) || $canon(mx[i]) != $canon(a[i].max(b[i])) {
+                    return Err($code + 0x40);
+                }
+                $h.word($canon(mn[i]));
+                $h.word($canon(mx[i]));
+            }
+        }
+    }};
+}
+
+/// Runs the IEEE group and returns its digest, or the code of the first lane
+/// that differs from the scalar IEEE operation.
+pub fn ieee_digest() -> Result<u64, u32> {
+    let mut rng = SplitMix64(0x1EEE_0754_0000_0001);
+    let mut h = Fnv(0xCBF2_9CE4_8422_2325);
+    let f32b = |x: u64| f32::from_bits(x as u32);
+    let f64b = |x: u64| f64::from_bits(x);
+    ieee_group!(F32x16, f32, 16, canon32, mul_add_f32, f32b, false, rng, h, 0xC000);
+    ieee_group!(F64x8, f64, 8, canon64, mul_add_f64, f64b, false, rng, h, 0xC100);
+    ieee_group!(F32x8, f32, 8, canon32, mul_add_f32, f32b, true, rng, h, 0xC200);
+    ieee_group!(F64x4, f64, 4, canon64, mul_add_f64, f64b, true, rng, h, 0xC300);
+
+    // Slice FMA `acc[i] += a[i] * b[i]`: the 16/8-lane body and the scalar
+    // tail must both be the single-rounded FMA, at every remainder length.
+    for n in [0usize, 1, 7, 8, 15, 16, 17, 31, 33, 100] {
+        let a32: Vec<f32> = (0..n).map(|_| f32b(rng.next())).collect();
+        let b32: Vec<f32> = (0..n).map(|_| f32b(rng.next())).collect();
+        let mut acc32: Vec<f32> = (0..n).map(|_| f32b(rng.next())).collect();
+        let want32: Vec<f32> = (0..n)
+            .map(|i| mul_add_f32(a32[i], b32[i], acc32[i]))
+            .collect();
+        add_mul_f32(&mut acc32, &a32, &b32);
+        let a64: Vec<f64> = (0..n).map(|_| f64b(rng.next())).collect();
+        let b64: Vec<f64> = (0..n).map(|_| f64b(rng.next())).collect();
+        let mut acc64: Vec<f64> = (0..n).map(|_| f64b(rng.next())).collect();
+        let want64: Vec<f64> = (0..n)
+            .map(|i| mul_add_f64(a64[i], b64[i], acc64[i]))
+            .collect();
+        add_mul_f64(&mut acc64, &a64, &b64);
+        for i in 0..n {
+            if canon32(acc32[i]) != canon32(want32[i]) {
+                return Err(0xC400);
+            }
+            if canon64(acc64[i]) != canon64(want64[i]) {
+                return Err(0xC401);
+            }
+            h.word(canon32(acc32[i]));
+            h.word(canon64(acc64[i]));
+        }
+    }
+    Ok(h.0)
+}
+
+/// The float facade is IEEE 754 bit-exact and returns the same bits on every
+/// realization (see the section comment above for the exact scope).
+fn check_ieee_bit_exact() -> Result<(), u32> {
+    if ieee_digest()? != IEEE_GOLDEN {
+        return Err(0xC4FF);
     }
     Ok(())
 }

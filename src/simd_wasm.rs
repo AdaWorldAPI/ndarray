@@ -324,6 +324,74 @@ pub mod wasm32_simd {
         }
     }
 
+    impl F32x16 {
+        /// Lane mask: set iff the lane is NaN (`self != self`, unordered).
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let m = F32x16::from_array([0.0, f32::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]).is_nan();
+        /// assert_eq!(m.to_bitmask(), 0b10);
+        /// ```
+        #[inline(always)]
+        pub fn is_nan(self) -> F32Mask16 {
+            self.simd_ne(self)
+        }
+
+        /// Lane mask: set iff the lane is neither NaN nor infinite.
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let m = F32x16::from_array([0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]).is_finite();
+        /// assert_eq!(m.to_bitmask(), 0b1111_1111_1111_0001);
+        /// ```
+        #[inline(always)]
+        pub fn is_finite(self) -> F32Mask16 {
+            self.abs().simd_lt(Self::splat(f32::INFINITY))
+        }
+
+        /// Lane mask: set iff the lane is +Inf or -Inf.
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let m = F32x16::from_array([0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]).is_infinite();
+        /// assert_eq!(m.to_bitmask(), 0b1100);
+        /// ```
+        #[inline(always)]
+        pub fn is_infinite(self) -> F32Mask16 {
+            self.abs().simd_eq(Self::splat(f32::INFINITY))
+        }
+
+        /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and ±0).
+        ///
+        /// One `v128_bitselect` per register.
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// assert_eq!(F32x16::splat(3.0).copysign(F32x16::splat(-0.0)).to_array(), [-3.0; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn copysign(self, sign: Self) -> Self {
+            let m = u32x4_splat(0x8000_0000);
+            Self([
+                v128_bitselect(sign.0[0], self.0[0], m),
+                v128_bitselect(sign.0[1], self.0[1], m),
+                v128_bitselect(sign.0[2], self.0[2], m),
+                v128_bitselect(sign.0[3], self.0[3], m),
+            ])
+        }
+
+        /// Exactly `1.0 / self` (IEEE division, correctly rounded).
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// assert_eq!(F32x16::splat(4.0).recip().to_array(), [0.25; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn recip(self) -> Self {
+            Self::splat(1.0) / self
+        }
+    }
+
     impl Add for F32x16 {
         type Output = Self;
         #[inline(always)]
@@ -422,6 +490,7 @@ pub mod wasm32_simd {
     /// 16-lane comparison mask for `F32x16` (one bit per lane).
     #[derive(Copy, Clone, Debug)]
     pub struct F32Mask16(pub u16);
+    impl_bitmask_mask_api!(F32Mask16, u16, 16, F32x16);
     impl F32Mask16 {
         /// The mask as a packed 16-bit bitmask, LSB-first (bit `i` = lane `i`).
         /// The one representation-independent reading of a compare result: every
@@ -691,6 +760,74 @@ pub mod wasm32_simd {
         }
     }
 
+    impl F64x8 {
+        /// Lane mask: set iff the lane is NaN (`self != self`, unordered).
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let m = F64x8::from_array([0.0, f64::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).is_nan();
+        /// assert_eq!(m.to_bitmask(), 0b10);
+        /// ```
+        #[inline(always)]
+        pub fn is_nan(self) -> F64Mask8 {
+            self.simd_ne(self)
+        }
+
+        /// Lane mask: set iff the lane is neither NaN nor infinite.
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let m = F64x8::from_array([0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.0, 2.0, 3.0, 4.0]).is_finite();
+        /// assert_eq!(m.to_bitmask(), 0b1111_0001);
+        /// ```
+        #[inline(always)]
+        pub fn is_finite(self) -> F64Mask8 {
+            self.abs().simd_lt(Self::splat(f64::INFINITY))
+        }
+
+        /// Lane mask: set iff the lane is +Inf or -Inf.
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let m = F64x8::from_array([0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.0, 2.0, 3.0, 4.0]).is_infinite();
+        /// assert_eq!(m.to_bitmask(), 0b1100);
+        /// ```
+        #[inline(always)]
+        pub fn is_infinite(self) -> F64Mask8 {
+            self.abs().simd_eq(Self::splat(f64::INFINITY))
+        }
+
+        /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and ±0).
+        ///
+        /// One `v128_bitselect` per register.
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// assert_eq!(F64x8::splat(3.0).copysign(F64x8::splat(-0.0)).to_array(), [-3.0; 8]);
+        /// ```
+        #[inline(always)]
+        pub fn copysign(self, sign: Self) -> Self {
+            let m = u64x2_splat(0x8000_0000_0000_0000);
+            Self([
+                v128_bitselect(sign.0[0], self.0[0], m),
+                v128_bitselect(sign.0[1], self.0[1], m),
+                v128_bitselect(sign.0[2], self.0[2], m),
+                v128_bitselect(sign.0[3], self.0[3], m),
+            ])
+        }
+
+        /// Exactly `1.0 / self` (IEEE division, correctly rounded).
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// assert_eq!(F64x8::splat(4.0).recip().to_array(), [0.25; 8]);
+        /// ```
+        #[inline(always)]
+        pub fn recip(self) -> Self {
+            Self::splat(1.0) / self
+        }
+    }
+
     impl Add for F64x8 {
         type Output = Self;
         #[inline(always)]
@@ -789,6 +926,7 @@ pub mod wasm32_simd {
     /// 8-lane comparison mask for `F64x8` (one bit per lane).
     #[derive(Copy, Clone, Debug)]
     pub struct F64Mask8(pub u8);
+    impl_bitmask_mask_api!(F64Mask8, u8, 8, F64x8);
     impl F64Mask8 {
         /// Lane `i` of the comparison is bit `i` of the result.
         #[inline(always)]
@@ -1514,6 +1652,34 @@ pub mod wasm32_simd {
                 }
             }
             mask
+        }
+    }
+
+    impl U32x16 {
+        /// Full 64-bit product of the EVEN u32 lanes: lane `k` (0..8) of the
+        /// result is `(self[2k] as u64) * (rhs[2k] as u64)`; odd lanes are
+        /// ignored. Exact, never wraps (`(2^32 - 1)^2 < 2^64`).
+        ///
+        /// Per `v128`: the high 32 bits of each u64 are cleared (leaving the even
+        /// u32 lane zero-extended), then one `i64x2.mul` — both factors are
+        /// below 2^32, so the wrapping 64-bit product is the exact u64 product.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use ndarray::simd::U32x16;
+        /// let a = U32x16::splat(u32::MAX);
+        /// let w = a.mul_widen_even(a).to_array();
+        /// assert_eq!(w, [u64::from(u32::MAX) * u64::from(u32::MAX); 8]);
+        /// ```
+        #[inline(always)]
+        pub fn mul_widen_even(self, rhs: Self) -> U64x8 {
+            let low32 = u64x2_splat(0xFFFF_FFFF);
+            U64x8(core::array::from_fn(|k| {
+                let a = v128_and(self.0[k].0, low32);
+                let b = v128_and(rhs.0[k].0, low32);
+                U64x2(i64x2_mul(a, b))
+            }))
         }
     }
 

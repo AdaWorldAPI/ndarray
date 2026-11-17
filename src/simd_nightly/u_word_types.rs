@@ -1345,3 +1345,28 @@ impl U32x16 {
         Self(r)
     }
 }
+
+// F6 (plan simd-fruits-integration-v1): widening and high-half multiply.
+impl U32x16 {
+    /// Exact `u32 × u32 → u64` of the even lanes: output lane k is
+    /// `self[2k] * rhs[2k]`. The 64 bytes are reinterpreted as `u64x8`
+    /// (each u64 holds lanes 2k, 2k+1 little-endian), masked to the even
+    /// lane, and multiplied; the product of two values < 2^32 fits in u64.
+    #[inline(always)]
+    pub fn mul_widen_even(self, rhs: Self) -> U64x8 {
+        // SAFETY: `Simd<u32, 16>` and `Simd<u64, 8>` are both 64 bytes of
+        // plain integers with no invalid bit patterns.
+        let (a, b): (u64x8, u64x8) = unsafe { (core::mem::transmute(self.0), core::mem::transmute(rhs.0)) };
+        let lo = u64x8::splat(0xFFFF_FFFF);
+        U64x8((a & lo) * (b & lo))
+    }
+}
+
+impl U16x32 {
+    /// High 16 bits of the 32-bit product, per lane.
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        let p = self.0.cast::<u32>() * rhs.0.cast::<u32>();
+        Self((p >> core::simd::Simd::splat(16)).cast::<u16>())
+    }
+}

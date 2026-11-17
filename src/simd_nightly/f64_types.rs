@@ -308,6 +308,12 @@ impl F64x4 {
         super::u_word_types::U64x4(self.0.to_bits())
     }
 
+    /// Reinterprets raw IEEE-754 bits as lanes (inverse of `to_bits`).
+    #[inline(always)]
+    pub fn from_bits(bits: super::u_word_types::U64x4) -> Self {
+        Self(core_f64x4::from_bits(bits.0))
+    }
+
     // ── Comparisons → mask ─────────────────────────────────────────
 
     /// Per-lane `==`.
@@ -344,5 +350,63 @@ impl F64x4 {
     #[inline(always)]
     pub fn simd_ge(self, other: Self) -> super::masks::F64Mask4 {
         super::masks::F64Mask4(self.0.simd_ge(other.0))
+    }
+}
+
+// F5 (plan simd-fruits-integration-v1): classification, copysign, reciprocal.
+impl F64x8 {
+    /// Lane set iff the lane is NaN.
+    #[inline(always)]
+    pub fn is_nan(self) -> super::masks::F64Mask8 {
+        super::masks::F64Mask8(self.0.is_nan())
+    }
+    /// Lane set iff the lane is neither NaN nor infinite.
+    #[inline(always)]
+    pub fn is_finite(self) -> super::masks::F64Mask8 {
+        super::masks::F64Mask8(self.0.is_finite())
+    }
+    /// Lane set iff the lane is +Inf or -Inf.
+    #[inline(always)]
+    pub fn is_infinite(self) -> super::masks::F64Mask8 {
+        super::masks::F64Mask8(self.0.is_infinite())
+    }
+    /// Magnitude of `self`, sign bit of `sign` (bit-exact).
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        Self(self.0.copysign(sign.0))
+    }
+    /// Exactly `1.0 / self` per lane.
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        Self(self.0.recip())
+    }
+}
+
+// F5 (plan simd-fruits-integration-v1): classification, copysign, reciprocal.
+impl F64x4 {
+    /// Lane set iff the lane is NaN.
+    #[inline(always)]
+    pub fn is_nan(self) -> super::masks::F64Mask4 {
+        super::masks::F64Mask4(self.0.is_nan())
+    }
+    /// Lane set iff the lane is neither NaN nor infinite.
+    #[inline(always)]
+    pub fn is_finite(self) -> super::masks::F64Mask4 {
+        super::masks::F64Mask4(self.0.is_finite())
+    }
+    /// Lane set iff the lane is +Inf or -Inf.
+    #[inline(always)]
+    pub fn is_infinite(self) -> super::masks::F64Mask4 {
+        super::masks::F64Mask4(self.0.is_infinite())
+    }
+    /// Magnitude of `self`, sign bit of `sign` (bit-exact).
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        Self(self.0.copysign(sign.0))
+    }
+    /// Exactly `1.0 / self` per lane.
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        Self(self.0.recip())
     }
 }

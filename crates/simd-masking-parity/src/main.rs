@@ -13,6 +13,10 @@ fn main() {
         cfg!(target_feature = "simd128"),
         cfg!(feature = "nightly-simd"),
     );
+    match simd_masking_parity::ieee_digest() {
+        Ok(d) => println!("ieee-digest={d:#018x} (golden {:#018x})", simd_masking_parity::IEEE_GOLDEN),
+        Err(code) => println!("ieee-digest: lane differs from the scalar IEEE operation, code = {code:#x}"),
+    }
     let rc = simd_masking_parity::run();
     if rc != 0 {
         eprintln!("simd-masking-parity FAILED: code = {rc:#x} (see src/lib.rs)");

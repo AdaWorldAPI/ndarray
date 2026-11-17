@@ -1,3 +1,158 @@
+## 2026-11-17 — IEEE bit-exact gate in CI: parity group 26 `check_ieee_bit_exact` + `IEEE_GOLDEN`
+
+`crates/simd-masking-parity` gains one check group, so every existing realization row of
+`.github/workflows/simd-matrix.yaml` runs it (no new job). Per lane vs the scalar IEEE op: + - * /, sqrt,
+single-rounded mul_add, round (ties-even), floor, abs, copysign, recip, six compares, is_nan/is_finite/
+is_infinite, simd_min/max, on F32x16, F64x8, F32x8, F64x4 (600 rounds each: specials + random bit patterns
+incl. subnormals/NaN/Inf), plus slice add_mul_f32/f64 at 10 remainder lengths. All results fold into an
+FNV-1a digest that must equal `IEEE_GOLDEN = 0xEE52_C9E7_819D_32C3`.
+Measured: identical digest printed on native v4, pinned v3, avx-qemu, v2-qemu, neon-qemu and nightly;
+wasm, wasm-scalar, wasm-relaxed return rc=0 (they compare against the same constant). Disable run: F32x16::
+recip → vrcp14 gives code 0xC00A (exit 1). Not pinned, by IEEE or by pre-existing behaviour (documented in
+the group's comment): NaN sign/payload (canonicalized); min/max of +0 vs -0; min/max with a NaN operand on
+the 512-bit types (AVX-512 = raw vminps, others ignore NaN — master behaviour, untouched); reductions
+(summation order). The parity crate has 4 pre-existing clippy hits (same count before this change; not CI-
+gated); none in the new section.
+
+## 2026-11-17 — LEARNED from the reference code (operator pointed at BF16x16, F16/F32 + add_mul, as_chunks)
+
+Read-only study; nothing in these files was changed. I had mislabelled them as "debt" (plan F8, now withdrawn).
+- `BF16x16` (simd_avx512.rs): bf16 is a STORAGE format. Widening bf16→f32 is lossless (a shift); the one
+  lossy step, f32→bf16, has exactly one definition (Intel SDM RNE) and the AVX-512-F software path is
+  certified byte-identical to `_mm512_cvtneps_pbh` on every input, so every CPU gives the same bits. The
+  older truncating `f32_to_bf16_scalar` was LEFT IN PLACE for its callers; the new rule got a new name.
+- `add_mul_f32/f64` (simd_ops.rs, simd_runtime/add_mul.rs): compute stays in the wide format; each lane is
+  ONE IEEE rounding (hardware FMA, or the exact software FMA of simd_fma where there is none), and the tail
+  uses the same single-rounded op, so body and tail and every arm agree bit for bit. No narrowing between ops.
+- `as_chunks::<N>()` (simd_soa.rs, hpc/renderer.rs, hpc/statistics.rs): a chunk is a `&[T; N]` — a pointer
+  cast, no copy, no index arithmetic — handed to `from_array(*chunk)`; the remainder is a separate slice.
+Pattern: widen once at the edge, compute exactly in the wide type, narrow once at the other edge with one
+certified rounding; a software fallback is only acceptable if it is bit-identical to the hardware form and a
+test proves it; existing behaviour is never altered — a new semantics gets a new name.
+Checked this branch's additions against it: all are bit-exact and arm-identical by test. One thing to know,
+not changed: on AVX2 a compare result is packed to the public bitmask and re-expanded by `select` (lossless,
+but a pack/expand per use) — that is the cost of keeping `F64Mask8(pub u8)` unchanged.
+
+## 2026-11-17 — RULE (operator): every facade method is IEEE bit-exact, identical on every CPU; no round trips
+
+"Every method MUST be ieee bit exact. Any round trip must be prevented by all means. Mantissa bit must be
+preserved." Applied: `recip_approx` removed from all arms (it returned arm-dependent bits). Audit of the
+rest of this branch's additions: compares/masks, copysign, recip, sqrt, round, floor, mul_add (FMA3, or the
+exact scalar FMA on AVX-without-FMA), mul_widen_even/mul_high (integer exact), load/store_partial (bit
+copies) — all bit-exact and arm-identical by the parity tests. Pre-existing (master, untouched): AVX-512
+F32x16/F64x8 simd_min/max use raw vminps (NaN → second operand) while AVX2/scalar use f32::min; nightly
+reduce_* all-NaN → NaN. Plan F12 (fast/exact split) rejected.
+
+## 2026-11-17 — CORRECTION: simd-fruits breaking changes reverted (operator: "absolutely unacceptable")
+
+Two breaks had shipped on PR #435 and are removed:
+1. AVX2 `F32Mask16(pub u16)` / `F64Mask8(pub u8)` had become private lane-mask pairs → restored byte-for-
+   byte (struct lines identical to master); `hpc/splat3d/raster.rs` reverted to master. The speedup stays:
+   compares = per-half `vcmpp*` packed with `vmovmskp*` (`from_halves`), `select` = `from_bitmask` +
+   `vblendvp*`; operators/any/all/none come from `impl_bitmask_mask_api!` (additive).
+2. AVX2 `simd_min/max` had switched to vminps NaN rule → restored `f32::min` semantics: `F32x8/F64x4`
+   simd_min/max = `vminp*` + `cmpunord(other)` blend of `self`; reduce_* = NaN-ignoring tree, all-NaN →
+   ±INFINITY (= master's `fold(INFINITY, f32::min)`).
+Evidence: every `pub fn/struct/type/use/mod/const` line of master exists unchanged on the branch (14 files,
+0 missing); new compat tests `nan_min_max_reduce_*` in tests/simd_lane_masks.rs (disable run: drop the NaN
+blend → both red); lib 2743 (v4) / 2692 (v3); all 5 parity test files on v4, v3, avx, v2, aarch64-qemu,
+nightly; masking-parity 6 arms PASS; clippy/guard/gen-check/no-std clean. Nightly backend left exactly as
+on master (its all-NaN reduce returns NaN — pre-existing, test exempts only that case on nightly).
+RULE (recorded in plan F2): this plan is additions-only — no existing public field, signature or result
+changes. Residual, not a break: new inherent methods (e.g. `is_nan`, `any`) take precedence over a
+downstream trait method of the same name on these types.
+
+## 2026-11-17 — LANDED: simd-fruits F4 (masked tail load/store) — P0 F1/F2 + P1 F4–F7 complete
+
+`load_partial(&[T])` / `store_partial(&mut [T])` on F32x16, F64x8, F32x8, F64x4, U8x64, I32x16, U32x16
+(src/simd_partial.rs, one Sonnet worker). AVX-512: maskz_loadu / mask_storeu with k = low-n bits (BW for
+U8x64); AVX 256-bit floats: vmaskmovps/pd; everything else: one memcpy into a zeroed buffer + full load.
+tests/simd_partial.rs 3/3 on v4, v3, avx, v2, aarch64-qemu, nightly (every tail length 0..=LANES+1,
+store writes nothing outside the window). Disable run (mask16 enables lane n) → SIGSEGV on the empty-
+slice case: with the correct mask the dangling pointer of an empty slice is never dereferenced — direct
+evidence that masked-off lanes are not accessed (the fault-safety property). Sonnet card: 1 run, 0 defects.
+Local gate list now also: `cargo test --no-run --no-default-features` (RUSTFLAGS=-Dwarnings) and
+`python3 tools/gen_ternlog_bodies.py --check`.
+
+## 2026-11-17 — LANDED: simd-fruits F7 + CI fix (AVX2 U8x64 burn-down; D-ADD-PM loose end closed)
+
+AVX2 `U8x64::saturating_add/sub` are two `U8x32` vpaddusb/vpsubusb halves; `mask_blend(u64)` expands
+the bits to MSB byte masks with a SWAR multiply (bits*0x0101.. & 0x8040201008040201, +0x7F | ., &0x80..)
+— no shuffle, no table — then two vpblendvb. Measured D-ADD-PM, pinned v3, best of 50, same host:
+add_pm 285.6 → 48.6 ns / 64 lanes (5.9×), sub_pm 289.6 → 52.1 ns; decode path 133–135 ns both runs, so
+add_pm on AVX2 now beats decode 2.7× (was 0.47×). tests/simd_u8x64_blend.rs 3/3 + add_pm 11/11 on v4,
+v3, avx, v2. Sonnet card: 1 run, 0 defects.
+CI fix in the same commit (red since F1 on PR #435, caught by CI, not by my local gates): (1) no-std
+builds left `impl_bitmask_mask_api` unused under -D warnings → module gated on `std`, lint allowed;
+(2) appended code after `// GEN-TERNLOG-END` in simd_avx2.rs = generator drift → moved above BEGIN.
+LESSON: add `cargo check --no-default-features` and `python3 tools/gen_ternlog_bodies.py --check` to
+the local gate list for any simd_*.rs change.
+
+## 2026-11-17 — LANDED: simd-fruits F6 (widening / high-half multiply)
+
+`U32x16::mul_widen_even -> U64x8` (vpmuludq; AVX2 2×256 / AVX 4×128 SSE2; NEON vmovn+vmull;
+wasm and-mask + i64x2_mul; nightly transmute+mask), `U16x32::mul_high` / `I16x32::mul_high`
+(vpmulhuw/vpmulhw; NEON I16x32 vmull+vshrn written by orchestrator). tests/simd_widen_mul.rs
+3/3 on v4, v3, avx, v2, aarch64-qemu, nightly; disable (AVX2 epu16→epi16) red. IFMA mul52 deferred
+(plan note). Sonnet card: 5 runs, 0 code defects; 1 brief defect (mine): NEON I16x32 is a NEON
+polyfill, not scalar — orchestrator added it.
+
+## 2026-11-17 — LANDED: simd-fruits F1+F2+F3 and F5 (branch claude/practical-newton-u8lir8, PR #435)
+
+- F1+F2+F3 (orchestrator-written): full F32x8/F64x4 API with F32Mask8/F64Mask4 lane masks on every
+  stable arm; AVX2 F32Mask16/F64Mask8 are now pairs of lane masks, so the F32x16/F64x8 scalar
+  compare/select/min/max/sqrt/round/floor loops are gone; every mask gets from_bitmask/any/all/none
+  and & | ^ !. AVX2 simd_min/max NaN rule now matches AVX-512 (vminps).
+- F5 (Sonnet-drafted, one worker per backend file): is_nan/is_finite/is_infinite/copysign/recip/
+  recip_approx on F32x16/F64x8/F32x8/F64x4. Measured recip_approx worst relative error (f32 sweep):
+  AVX-512 3.96e-5 (vrcp14), AVX2/AVX 2.99e-4 (vrcpps), exact arms 4.3e-8.
+- Evidence: tests/simd_lane_masks.rs 7/7 and tests/simd_float_classify.rs 3/3 on native(v4), v3, avx,
+  v2, aarch64-qemu and nightly-simd; disable runs red (AVX2 to_bitmask shift; copysign imm 0xE4);
+  lib 2743 (v4) / 2692 (v3) passed; masking-parity all 6 arms PASS; clippy/fmt/guard clean.
+
+Sonnet card log (F5 wave): 5 runs (avx512, avx2, scalar, neon, wasm), all code compiled first try on
+every arm and passed parity; items wrong: 0 code, 1 report claim (scalar worker said F32Mask16/
+F64Mask8 have no to_bitmask — they do, simd_scalar.rs:1433), doctests in scalar+neon read mask `.0`
+(representation-dependent) — orchestrator switched 9 to to_bitmask(). Nightly backend F5 + the
+missing F64x4::from_bits added by the orchestrator.
+
+## 2026-11-17 — PLAN: `.claude/plans/simd-fruits-integration-v1.md` (wide/pulp ideas ranked by signal, AVX-512 first)
+
+P0 = F1 finish `F32x8`/`F64x4` (compares, min/max, mul_add) on every stable arm (also
+removes the AVX2 `F64x8` scalar compares) · F2 masks that match each tier (vector on
+AVX2, kmask on AVX-512) · F3 mask any/all/none. P1 = F4 masked tails, F5 float classification
+and recip, F6 widening/high multiply, F7 AVX2 integer burn-down (U8x64 first, D-ADD-PM
+witness). P2 = F8 bf16 debt, F9 FP16 probe, F10 kernel-level `with_tier` dispatch. Open:
+the F2 mask field becoming private, the F10 scope, and cargo permission for the witnesses.
+
+## 2026-11-17 — INVENTORY: ndarray::simd vs wide 1.7.1 vs pulp 0.23 (doc: `.claude/knowledge/simd-crate-comparison-wide-pulp-2026-11-17.md`)
+
+Feature matrix, 10 tech-debt items, an ideas-to-steal table. Headline debt, read
+from source: AVX2 `F64x8::simd_le` and `F64Mask8::select` are scalar loops
+(`simd_avx2.rs:982`, `:1153`). The root cause is the one-shape `u8` mask. pulp makes the
+mask an associated type that differs per tier (vector on V3, `b8` on V4); wide makes it
+the vector type. `F64x4` has no compares on any stable arm, and `F64Mask4` exists
+only in `simd_nightly/masks.rs:148`, so the backends offer different APIs.
+
+Mandelbrot bench prepared on `AdaWorldAPI/mandelbrot-simd` branch
+`claude/practical-newton-u8lir8` (local, uncommitted: stable toolchain, `ndarray` and
+`wide8` arms, pulp `x86-v4`, in-process timer). NOT RUN: `cargo build` there was denied
+by the permission classifier. Predictions P1–P4 are pre-registered in the doc.
+
+Haiku card log (substrate-mapper, 6 units; orchestrator re-ran counts):
+| unit | runs | checked | wrong | missed |
+|---|---|---|---|---|
+| wide traits | 1 | trait/method counts read via its own map | 0 | 0 |
+| wide per-type | 1 | brief pattern missed `pub(crate)`; card self-corrected the pattern; hand-tallied table not used | 0 | 0 |
+| pulp core | 1 | 2 items Read (`first_true_m64s` :819, `select_u64s` :1447) | 1 (trait line 607 vs 608) | 0 |
+| pulp backends | 1 | 4 counts re-run (v1 109, v3 215, v4 370, aarch64 138) | 0 | 0 |
+| ndarray facade | 2 (1st BRIEF-INCOMPLETE) | 22 structs, 291 fns re-run | 0 | 0 |
+| ndarray extras | 2 (1st BRIEF-INCOMPLETE) | 5 counts re-run | 0 | 0 |
+Two briefs came back BRIEF-INCOMPLETE because they gave no caller space. The next brief must state `caller space: none` explicitly.
+
+Loose ends: run the bench (needs permission), objdump get_count per arm per tier,
+then decide on TD 1–3 (tier-native mask + F64x4 compares).
+
 ## 2026-11-15 — RESULT: D-ADD-PM, Codec9 `P × M` lanes added in place
 
 `examples/add_pm/` + `tests/add_pm.rs`; doc `.claude/knowledge/add-pm-probe.md`.

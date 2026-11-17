@@ -295,10 +295,13 @@ pub use crate::simd_avx512::{
     u8x64,
     u8x8,
     F32Mask16,
+    // 256-bit lane masks (vector masks on every x86 arm)
+    F32Mask8,
     // 512-bit (native AVX-512, __m512/__m512d/__m512i)
     F32x16,
     // 256-bit (AVX2, __m256/__m256d/__m256i)
     F32x8,
+    F64Mask4,
     F64Mask8,
     F64x4,
     F64x8,
@@ -371,7 +374,7 @@ pub use crate::simd_avx512::{BF16x16, BF16x8};
 ))]
 pub use crate::simd_avx512::{
     batch_packed_i4_16, f32x8, f64x4, i16x16, i8x16, i8x32, palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1,
-    prefetch_read_t2, u16x8, u8x16, u8x8, F32x8, F64x4, I16x16, I8x16, I8x32, U16x8, U8x16, U8x8,
+    prefetch_read_t2, u16x8, u8x16, u8x8, F32Mask8, F32x8, F64Mask4, F64x4, I16x16, I8x16, I8x32, U16x8, U8x16, U8x8,
 };
 
 #[cfg(all(
@@ -452,8 +455,8 @@ pub use crate::simd_neon::{u32x16, U32x16};
 pub use crate::simd_neon::{i32x16, u64x8, I32x16, U64x8};
 #[cfg(all(target_arch = "aarch64", not(feature = "nightly-simd")))]
 pub use scalar::{
-    f32x8, f64x4, i32x8, i64x4, i64x8, u16x16, u32x8, u64x4, u8x64, F32x8, F64x4, I32x8, I64x4, I64x8, U16x16, U16x32,
-    U32x8, U64x4, U8x64,
+    f32x8, f64x4, i32x8, i64x4, i64x8, u16x16, u32x8, u64x4, u8x64, F32Mask8, F32x8, F64Mask4, F64x4, I32x8, I64x4,
+    I64x8, U16x16, U16x32, U32x8, U64x4, U8x64,
 };
 
 // wasm32 + simd128: the native v128 float hot path (F32x16 / F64x8 + masks)
@@ -473,8 +476,9 @@ pub use crate::simd_wasm::wasm32_simd::{
 #[cfg(all(target_arch = "wasm32", target_feature = "simd128", not(feature = "nightly-simd")))]
 pub use scalar::{
     batch_packed_i4_16, f32x8, f64x4, i16x16, i16x32, i32x8, i64x4, i64x8, i8x32, i8x64, palette_lookup_u8x8,
-    prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x8, u64x4, u8x64, u8x8, F32x8, F64x4,
-    I16x16, I16x32, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x8, U64x4, U8x64, U8x8,
+    prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x8, u64x4, u8x64, u8x8, F32Mask8, F32x8,
+    F64Mask4, F64x4, I16x16, I16x32, I32x8, I64x4, I64x8, I8x32, I8x64, U16x16, U16x32, U16x8, U32x8, U64x4, U8x64,
+    U8x8,
 };
 
 // Other non-x86 targets — wasm32 without simd128, riscv, etc.: full scalar
@@ -496,8 +500,9 @@ pub use scalar::{
 pub use scalar::{
     batch_packed_i4_16, f32x16, f32x8, f64x4, f64x8, i16x16, i16x32, i32x16, i32x8, i64x4, i64x8, i8x16, i8x32, i8x64,
     palette_lookup_u8x8, prefetch_read_t0, prefetch_read_t1, prefetch_read_t2, u16x16, u16x8, u32x16, u32x8, u64x4,
-    u64x8, u8x16, u8x64, u8x8, F32Mask16, F32x16, F32x8, F64Mask8, F64x4, F64x8, I16x16, I16x32, I32x16, I32x8, I64x4,
-    I64x8, I8x16, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16, U32x8, U64x4, U64x8, U8x16, U8x64, U8x8,
+    u64x8, u8x16, u8x64, u8x8, F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4, F64Mask8, F64x4, F64x8, I16x16, I16x32,
+    I32x16, I32x8, I64x4, I64x8, I8x16, I8x32, I8x64, U16x16, U16x32, U16x8, U32x16, U32x8, U64x4, U64x8, U8x16, U8x64,
+    U8x8,
 };
 
 // Scalar BF16 conversion — always available on all platforms

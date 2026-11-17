@@ -717,6 +717,90 @@ pub mod aarch64_simd {
         }
     }
 
+    impl F32x16 {
+        /// Lane-wise NaN test: bit `i` of the mask is set iff lane `i` is NaN.
+        ///
+        /// Realized as `self.simd_ne(self)` (unordered `!=`, true only for NaN).
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let mut a = [1.0f32; 16];
+        /// a[1] = f32::NAN;
+        /// assert_eq!(F32x16::from_array(a).is_nan().to_bitmask(), 0b10);
+        /// ```
+        #[inline(always)]
+        pub fn is_nan(self) -> F32Mask16 {
+            self.simd_ne(self)
+        }
+
+        /// Lane-wise finite test: bit `i` is set iff lane `i` is neither NaN nor +/-Inf.
+        ///
+        /// Realized as `self.abs().simd_lt(splat(INFINITY))` (ordered `<`).
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let mut a = [1.0f32; 16];
+        /// a[0] = f32::INFINITY;
+        /// a[1] = f32::NAN;
+        /// assert_eq!(F32x16::from_array(a).is_finite().to_bitmask(), 0xFFFFu16 & !0b11);
+        /// ```
+        #[inline(always)]
+        pub fn is_finite(self) -> F32Mask16 {
+            self.abs().simd_lt(Self::splat(f32::INFINITY))
+        }
+
+        /// Lane-wise infinity test: bit `i` is set iff lane `i` is +Inf or -Inf.
+        ///
+        /// Realized as `self.abs().simd_eq(splat(INFINITY))`.
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let mut a = [1.0f32; 16];
+        /// a[0] = f32::INFINITY;
+        /// a[2] = f32::NEG_INFINITY;
+        /// a[3] = f32::NAN;
+        /// assert_eq!(F32x16::from_array(a).is_infinite().to_bitmask(), 0b101);
+        /// ```
+        #[inline(always)]
+        pub fn is_infinite(self) -> F32Mask16 {
+            self.abs().simd_eq(Self::splat(f32::INFINITY))
+        }
+
+        /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and +/-0).
+        ///
+        /// One `vbslq_f32` bit-select per 128-bit register with the sign-bit mask.
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let r = F32x16::splat(3.0).copysign(F32x16::splat(-0.0));
+        /// assert_eq!(r.to_array(), [-3.0f32; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn copysign(self, sign: Self) -> Self {
+            // SAFETY: NEON is baseline on aarch64; register-only bit-select, no memory access.
+            unsafe {
+                let m = vdupq_n_u32(0x8000_0000);
+                Self([
+                    vbslq_f32(m, sign.0[0], self.0[0]),
+                    vbslq_f32(m, sign.0[1], self.0[1]),
+                    vbslq_f32(m, sign.0[2], self.0[2]),
+                    vbslq_f32(m, sign.0[3], self.0[3]),
+                ])
+            }
+        }
+
+        /// Reciprocal: exactly `1.0 / self` (IEEE division, correctly rounded).
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// assert_eq!(F32x16::splat(4.0).recip().to_array(), [0.25f32; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn recip(self) -> Self {
+            Self::splat(1.0) / self
+        }
+    }
+
     impl Add for F32x16 {
         type Output = Self;
         #[inline(always)]
@@ -822,6 +906,7 @@ pub mod aarch64_simd {
 
     #[derive(Copy, Clone, Debug)]
     pub struct F32Mask16(pub u16);
+    impl_bitmask_mask_api!(F32Mask16, u16, 16, F32x16);
     impl F32Mask16 {
         /// The mask as a packed 16-bit bitmask, LSB-first (bit `i` = lane `i`).
         /// The one representation-independent reading of a compare result: every
@@ -1094,6 +1179,90 @@ pub mod aarch64_simd {
         }
     }
 
+    impl F64x8 {
+        /// Lane-wise NaN test: bit `i` of the mask is set iff lane `i` is NaN.
+        ///
+        /// Realized as `self.simd_ne(self)` (unordered `!=`, true only for NaN).
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let mut a = [1.0f64; 8];
+        /// a[1] = f64::NAN;
+        /// assert_eq!(F64x8::from_array(a).is_nan().to_bitmask(), 0b10);
+        /// ```
+        #[inline(always)]
+        pub fn is_nan(self) -> F64Mask8 {
+            self.simd_ne(self)
+        }
+
+        /// Lane-wise finite test: bit `i` is set iff lane `i` is neither NaN nor +/-Inf.
+        ///
+        /// Realized as `self.abs().simd_lt(splat(INFINITY))` (ordered `<`).
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let mut a = [1.0f64; 8];
+        /// a[0] = f64::INFINITY;
+        /// a[1] = f64::NAN;
+        /// assert_eq!(F64x8::from_array(a).is_finite().to_bitmask(), 0xFFu8 & !0b11);
+        /// ```
+        #[inline(always)]
+        pub fn is_finite(self) -> F64Mask8 {
+            self.abs().simd_lt(Self::splat(f64::INFINITY))
+        }
+
+        /// Lane-wise infinity test: bit `i` is set iff lane `i` is +Inf or -Inf.
+        ///
+        /// Realized as `self.abs().simd_eq(splat(INFINITY))`.
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let mut a = [1.0f64; 8];
+        /// a[0] = f64::INFINITY;
+        /// a[2] = f64::NEG_INFINITY;
+        /// a[3] = f64::NAN;
+        /// assert_eq!(F64x8::from_array(a).is_infinite().to_bitmask(), 0b101);
+        /// ```
+        #[inline(always)]
+        pub fn is_infinite(self) -> F64Mask8 {
+            self.abs().simd_eq(Self::splat(f64::INFINITY))
+        }
+
+        /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and +/-0).
+        ///
+        /// One `vbslq_f64` bit-select per 128-bit register with the sign-bit mask.
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let r = F64x8::splat(3.0).copysign(F64x8::splat(-0.0));
+        /// assert_eq!(r.to_array(), [-3.0f64; 8]);
+        /// ```
+        #[inline(always)]
+        pub fn copysign(self, sign: Self) -> Self {
+            // SAFETY: NEON is baseline on aarch64; register-only bit-select, no memory access.
+            unsafe {
+                let m = vdupq_n_u64(0x8000_0000_0000_0000);
+                Self([
+                    vbslq_f64(m, sign.0[0], self.0[0]),
+                    vbslq_f64(m, sign.0[1], self.0[1]),
+                    vbslq_f64(m, sign.0[2], self.0[2]),
+                    vbslq_f64(m, sign.0[3], self.0[3]),
+                ])
+            }
+        }
+
+        /// Reciprocal: exactly `1.0 / self` (IEEE division, correctly rounded).
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// assert_eq!(F64x8::splat(4.0).recip().to_array(), [0.25f64; 8]);
+        /// ```
+        #[inline(always)]
+        pub fn recip(self) -> Self {
+            Self::splat(1.0) / self
+        }
+    }
+
     impl Add for F64x8 {
         type Output = Self;
         #[inline(always)]
@@ -1199,6 +1368,7 @@ pub mod aarch64_simd {
 
     #[derive(Copy, Clone, Debug)]
     pub struct F64Mask8(pub u8);
+    impl_bitmask_mask_api!(F64Mask8, u8, 8, F64x8);
     impl F64Mask8 {
         /// Lane `i` of the comparison is bit `i` of the result.
         #[inline(always)]
@@ -1958,6 +2128,41 @@ impl U32x16 {
 }
 
 #[cfg(target_arch = "aarch64")]
+impl U32x16 {
+    /// Widening multiply of the even `u32` lanes: output lane `k` (0..8) is
+    /// `(self[2k] as u64) * (rhs[2k] as u64)`, the exact 64-bit product. Odd
+    /// input lanes are ignored.
+    ///
+    /// Per 128-bit register: reinterpret as `u64x2`, narrow with `vmovn_u64`
+    /// (keeps the low `u32` of each `u64`, i.e. the even lanes), then
+    /// `vmull_u32` widens the multiply.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(u32::MAX);
+    /// let w = a.mul_widen_even(a).to_array();
+    /// assert_eq!(w, [u64::from(u32::MAX) * u64::from(u32::MAX); 8]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_widen_even(self, rhs: Self) -> U64x8 {
+        #[inline(always)]
+        fn quad(a: U32x4, b: U32x4) -> U64x2 {
+            // SAFETY: NEON is baseline on aarch64; register-only narrowing
+            // and widening multiply, no memory access.
+            U64x2(unsafe { vmull_u32(vmovn_u64(vreinterpretq_u64_u32(a.0)), vmovn_u64(vreinterpretq_u64_u32(b.0))) })
+        }
+        U64x8([
+            quad(self.0[0], rhs.0[0]),
+            quad(self.0[1], rhs.0[1]),
+            quad(self.0[2], rhs.0[2]),
+            quad(self.0[3], rhs.0[3]),
+        ])
+    }
+}
+
+#[cfg(target_arch = "aarch64")]
 impl core::ops::Add for U32x16 {
     type Output = Self;
     #[inline(always)]
@@ -2407,6 +2612,38 @@ neon_int_polyfill!(I8x64, i8, 64, 0i8, u64);
 neon_int_polyfill!(I16x16, i16, 16, 0i16, u16);
 #[cfg(target_arch = "aarch64")]
 neon_int_polyfill!(I16x32, i16, 32, 0i16, u32);
+
+#[cfg(target_arch = "aarch64")]
+impl I16x32 {
+    /// High 16 bits of the 32-bit signed product, per lane:
+    /// `((self[i] as i32 * rhs[i] as i32) >> 16) as i16`.
+    ///
+    /// Per 128-bit register: `vmull_s16` / `vmull_high_s16` widen to i32
+    /// products, `vshrn_n_s32::<16>` / `vshrn_high_n_s32::<16>` narrow the
+    /// high halves back (narrowing moves, no shuffle).
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// assert_eq!(I16x32::splat(-32768).mul_high(I16x32::splat(2)).to_array(), [-1; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        let mut o = [0i16; 32];
+        // SAFETY: NEON is baseline on aarch64. Each register k reads/writes
+        // lanes 8k..8k+8 of 32-lane arrays (k < 4), so every access is in
+        // bounds; vld1q/vst1q need no alignment.
+        unsafe {
+            for k in 0..4 {
+                let a = vld1q_s16(self.0.as_ptr().add(8 * k));
+                let b = vld1q_s16(rhs.0.as_ptr().add(8 * k));
+                let lo = vmull_s16(vget_low_s16(a), vget_low_s16(b));
+                let hi = vmull_high_s16(a, b);
+                vst1q_s16(o.as_mut_ptr().add(8 * k), vshrn_high_n_s32::<16>(vshrn_n_s32::<16>(lo), hi));
+            }
+        }
+        Self(o)
+    }
+}
 
 #[cfg(target_arch = "aarch64")]
 impl I16x32 {
