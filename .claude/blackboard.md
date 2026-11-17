@@ -1,3 +1,12 @@
+## 2026-11-17 — PLAN: `.claude/plans/simd-fruits-integration-v1.md` (wide/pulp ideas ranked by signal, AVX-512 first)
+
+P0 = F1 finish `F32x8`/`F64x4` (compares, min/max, mul_add) on every stable arm (also
+removes the AVX2 `F64x8` scalar compares) · F2 masks that match each tier (vector on
+AVX2, kmask on AVX-512) · F3 mask any/all/none. P1 = F4 masked tails, F5 float classification
+and recip, F6 widening/high multiply, F7 AVX2 integer burn-down (U8x64 first, D-ADD-PM
+witness). P2 = F8 bf16 debt, F9 FP16 probe, F10 kernel-level `with_tier` dispatch. Open:
+the F2 mask field becoming private, the F10 scope, and cargo permission for the witnesses.
+
 ## 2026-11-17 — INVENTORY: ndarray::simd vs wide 1.7.1 vs pulp 0.23 (doc: `.claude/knowledge/simd-crate-comparison-wide-pulp-2026-11-17.md`)
 
 Feature matrix, 10 tech-debt items, an ideas-to-steal table. Headline debt, read
