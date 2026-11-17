@@ -19,6 +19,68 @@ orchestrator. Benchmark: `AdaWorldAPI/mandelbrot-simd` branch
 | Backends | SSE2/SSE4.1/AVX/AVX2/AVX-512 (f, vl, bw, ifma), NEON, wasm simd128, scalar | x86 V1–V4 (+ `V4_256`), aarch64 NEON (+ fcma), wasm (+ relaxed), aarch32, scalar | AVX-512, AVX2, AVX (no AVX2), v2→scalar, NEON (+dotprod, bf16, A72), wasm, wasm-scalar, AMX, nightly `core::simd` |
 | Size | 357 distinct fn names (`wide/src/simd*.rs` + backends) | `Simd` trait 414 items incl. macro-generated (mapper, `lib.rs:608`), 1,042 backend pub fns | 175 type-method names + 248 in the op modules (160 in `simd_masking_ops.rs`) |
 
+## 1b. ISA and architecture coverage
+
+Counted from every `target_arch = "…"`, `target_feature = "…"` / `enable = "…"`,
+`is_*_feature_detected!("…")` and pulp `f!("…")` string in each crate's `src/`.
+
+| | `wide` | `pulp` | `ndarray` |
+|---|---|---|---|
+| x86 SSE2…SSE4.2, AVX, AVX2, FMA | yes | yes (V1, V2, V3) | yes; AVX-without-AVX2 has its own arm (`simd_avx.rs`), v2 is routed to scalar |
+| AVX-512 F/BW/DQ/VL | yes | yes (V4, plus `V4_256`) | yes (`simd_avx512.rs`) |
+| AVX-512 extras | ifma, vbmi | cd, ifma, vbmi2, **fp16** | **bf16, vnni, vpopcntdq, vbmi, gfni**, avxvnni, avxvnniint8 |
+| **AMX** (tile, int8, bf16) | none | none | **yes**: `simd_amx.rs`, `hpc/amx_matmul.rs`, `hpc/bf16_tile_gemm.rs` (30 files mention it) |
+| AVX10 | none | none | detection only (`cpu_guard.rs:663`) |
+| aarch64 NEON | yes | yes (`Neon`, `NeonFcma`) | yes, by tier: baseline, **dotprod**, **bf16** (stub, see § 2b), A72/A76 profiles, fp16 |
+| aarch64 extras detected | none | fcma, dotprod, i8mm, rdm, frintts, aes/sha3/sm4 | dotprod, bf16, fp16, crc, sha2 |
+| **SVE / SVE2** | none | detection tokens only (`core_arch/mod.rs:227-248`), no `Simd` backend | none |
+| **wasm32 simd128** | yes | yes | yes (`simd_wasm.rs`, 3,043 lines) plus a **wasm-scalar** arm |
+| wasm relaxed-simd | `swizzle_relaxed` only | **yes**, feature `relaxed-simd` (on by default) | not used; `simd_wasm.rs:37` documents why (`relaxed_madd` may or may not fuse) |
+| aarch32 (ARMv7 NEON) | none | yes (`aarch32.rs`) | none |
+| riscv / powerpc / mips / wasm64 | none | `core::arch` re-export under `nightly` only, no backend | scalar fallback (`simd.rs:249,480`) |
+| LoongArch LSX/LASX | none | none | none |
+| Portable `core::simd` | none | `nightly` feature for bytemuck | `nightly-simd` backend (validation only) |
+| Runtime CPU detection | none | yes (`Arch::new`, raw-cpuid) | yes: `simd_caps.rs` (26 detects), `cpu_guard` refuses an unsupported binary |
+| Checks that backends agree | — | — | `masking-parity` arms: native, nightly, wasm, wasm-scalar, neon-qemu, avx-qemu, v2-qemu |
+
+Coverage verdict: ndarray is widest on x86 server features (AMX, BF16, VNNI,
+VPOPCNTDQ, GFNI) and is the only one that checks its backends agree. pulp is
+widest across architectures (aarch32, relaxed-simd, fp16, i8mm detection). Nobody has SVE,
+RISC-V V or LoongArch backends. Two pulp ideas are cheap to take here: AVX-512 FP16 (the host
+this was written on has `avx512_fp16`) and wasm relaxed-simd behind a feature for the
+non-FMA ops (min/max, dot, swizzle) where the result is deterministic.
+
+## 2b. bf16 comparison
+
+| | `wide` | `pulp` | `ndarray` |
+|---|---|---|---|
+| bf16 vector type | none | none (`Avx512bf16` and aarch64 `Bf16` are feature tokens, `core_arch/x86/mod.rs:363`) | `BF16x16(__m256bh)`, `BF16x8(__m128bh)` (`simd_avx512.rs:4135,4169`) |
+| bf16 → f32 | do it yourself (widen u16, shift 16) | do it yourself | hardware `vcvtneebf162ps` + batch helpers; scalar shift on other tiers |
+| f32 → bf16, round-to-nearest-even | none | none | `_mm512_cvtneps_pbh` + a software RNE certified byte-identical (`simd_avx512.rs:4378-4481`, `examples/bf16_rne_exhaustive.rs`) |
+| bf16 dot / GEMM | none | none | `VDPBF16PS` and AMX `TDPBF16PS` paths (`hpc/bf16_tile_gemm.rs`, `hpc/amx_matmul.rs`, `simd_runtime/matmul.rs`) |
+| aarch64 BFDOT | none | token only | **stub**: `BF16x8Stub` / `BF16x16Stub` (`simd_neon_bf16.rs:149,156`) |
+
+bf16 tech debt (ndarray):
+- **Two different `BF16x16` types.** `simd_avx512::BF16x16(__m256bh)` is hardware;
+  `simd_half::BF16x16([u16; 16])` is scalar ("SIMD-accelerated fast paths … are a
+  follow-up", `simd_half.rs:1-7`). The same name means two costs depending on the import.
+- **`simd_half` arithmetic is upcast-per-op scalar.** `add_bf16_inplace` and
+  `mul_bf16_inplace` (`simd_half.rs:245,266`) don't use the hardware conversions that
+  exist one file over.
+- **NEON bf16 is stubs** while `simd_caps` already detects `bf16`.
+
+bf16 has no competitor: neither crate has a bf16 type, so "ndarray vs wide/pulp" here
+means "ndarray vs what a wide/pulp user hand-writes" (widen u16→u32, shift, reinterpret).
+
+AVX-512 bf16 benchmark, prepared and not run (cargo was denied in this session, in this
+checkout too). Arms per 1 Mi elements: (a) hand-written widen+shift on `U16x32`/`U32x16` (the
+wide/pulp equivalent), (b) `BF16x16::to_f32x16` (`vcvtneebf162ps`), (c) `f32_to_bf16_batch_rne`
+software vs `_mm512_cvtneps_pbh`, (d) bf16 dot: decode-then-FMA vs `VDPBF16PS` vs AMX
+`TDPBF16PS` 16×16 tile. Pinned `--config .cargo/config-avx512.toml` (Sapphire Rapids; the
+host has `avx512_bf16 amx_bf16 amx_tile`).
+Predictions: P5 (b) ≥ 1.5× (a); P6 (c) software RNE within 2× of hardware; P7 (d)
+VDPBF16PS ≥ 2× decode-then-FMA; AMX ≥ 4× VDPBF16PS at K ≥ 512.
+
 ## 2. Feature inventory (concept → who has it)
 
 Counts are distinct fn names matching the concept in each crate's name set
@@ -43,7 +105,7 @@ Counts are distinct fn names matching the concept in each crate's name set
 | Int8 dot (VNNI `dot4_u8_i8`), fixed-point (`saturating_rounding_doubling_high_mul`) | none | none | yes | ndarray-only |
 | AMX tile GEMM | none | none | yes (`simd_amx.rs`) | ndarray-only |
 | Masking-op library (`*_to_mask`, `mask_*`, `masked_*`) | none | none | 160 fns | ndarray-only |
-| Runtime dispatch, one binary for v3+v4 | no | **yes** | no (by design) | |
+| Runtime dispatch, one binary for v3+v4 | no | **yes**, whole kernel: `Arch::dispatch(WithSimd)` enters a `#[target_feature]` trampoline once | **yes, opt-in**: `src/simd_runtime/` (feature `runtime-dispatch`), one `LazyLock` fn pointer **per op** (`vnni_dot`, `matmul`, `casts`, `add_mul`) | ⊘ corrected: the first revision said "no"; no mapper unit covered `simd_runtime/` |
 | serde / bytemuck Pod | both | bytemuck | none found in `simd.rs` | |
 
 ## 3. ndarray tech debt found by this comparison
@@ -94,7 +156,7 @@ Ordered by how directly it costs speed in real loops.
 | **Integer semantics breadth**: `overflowing_*`, `saturating_*` incl. mixed-sign, `widening_mul`, `mul_keep_high` | wide | The W1a contract already requires documented overflow semantics; wide's names are a ready vocabulary | Medium |
 | **f32/f64 transcendentals on the types** (sin_cos, exp, ln, pow, atan2) | wide | `hpc/vml.rs` and activations could call type methods instead of duplicating polynomial code | Medium |
 | **Complex `c32s`/`c64s` ops** (mul_add, conj_mul, abs2, swap_re_im) | pulp | `hpc/fft.rs` (Cooley-Tukey) is the consumer | Medium |
-| **Opt-in runtime dispatch layer** (`Arch` + `WithSimd` + `#[target_feature]` trampoline) | pulp | One distribution binary that uses v4 when present. Conflicts with the compile-time doctrine, so only as an opt-in wrapper *above* the facade, never inside it | Large; decision for the operator |
+| **Kernel-granular dispatch** (`WithSimd` + `#[target_feature]` trampoline) | pulp | ndarray already ships opt-in runtime dispatch (`simd_runtime/`), but per op: each call pays an indirect call (~2-3 ns, its own doc) and the op cannot inline into the caller's loop. pulp dispatches once per kernel and the whole loop body is compiled for the tier. Worth taking for the `runtime-dispatch` layer: a `with_tier(\|t\| ...)` entry that monomorphizes the closure per tier | Medium |
 
 What **not** to copy: wide's general `shuffle`/`swizzle`/`swizzle_half` family and
 pulp's `interleave_shfl`/`deinterleave_shfl` used as compute. Both are banned in this tree by the
