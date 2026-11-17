@@ -1,3 +1,14 @@
+## 2026-11-17 — RESULT: Mandelbrot wide / pulp / ndarray, v4 and v3 (doc § 6 of simd-crate-comparison-wide-pulp)
+
+Single-thread medians, ms (3200², median of 15): v4 — wide8 156, pulp 155, ndarray 170, wide(f64x4) 231,
+autovect 355, scalar 639. v3 — wide8 152, pulp 160 (runs AVX-512 by runtime dispatch), ndarray 199 (229
+before PR #435), wide 214. P1, P2, P4 hold. P3 FAILED (kill condition): pre-PR ndarray was 1.4×, not ≥ 2×,
+behind — LLVM had already vectorized most of the scalar compare loop. F1/F2 gain on v3: 13%.
+Remaining gaps, read from the hot-loop disassembly: v3 = pack/expand of the public bitmask around `select`
+(cost of keeping `F64Mask8(pub u8)`); v4 = lane-by-lane f64→u32 count conversion in the bench arm, since the
+facade has no vector F64x8→integer conversion (not measured in isolation). The fork did not compile as
+merged (pulp 0.23 unpublished; wide/pulp renames) — fixed in mandelbrot-simd `ccf4b81`.
+
 ## 2026-11-17 — IEEE bit-exact gate in CI: parity group 26 `check_ieee_bit_exact` + `IEEE_GOLDEN`
 
 `crates/simd-masking-parity` gains one check group, so every existing realization row of

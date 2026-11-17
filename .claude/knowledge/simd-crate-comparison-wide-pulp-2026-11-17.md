@@ -5,7 +5,7 @@ Sources: `Lokathor/wide` @ `1b4559c` (v1.7.1, 2026-11-02), `sarah-quinones/pulp`
 six runs) and the name sets behind every count below are in the session scratchpad
 (`maps/*.md`, `sets/*.txt`); every claim with a `file:line` here was Read by the
 orchestrator. Benchmark: `AdaWorldAPI/mandelbrot-simd` branch
-`claude/practical-newton-u8lir8` — **not yet run** (see § 5).
+`claude/practical-newton-u8lir8` — measured, see § 6.
 
 ## 1. Shape of each crate
 
@@ -164,7 +164,7 @@ FACET STRIDE rule R1. ndarray is ahead on quantized/bit-level work (VNNI, ternlo
 popcount, AMX, f16/bf16 RNE, the masking library) and on the number of backends it
 covers and checks for parity against each other.
 
-## 5. Mandelbrot benchmark — prepared, not run
+## 5. Mandelbrot benchmark — plan and pre-registered predictions (results in § 6)
 
 Fork: `AdaWorldAPI/mandelbrot-simd`, branch `claude/practical-newton-u8lir8` (local,
 uncommitted). Changes: stable toolchain 1.99.0; `std::simd` arm behind a `nightly`
@@ -202,3 +202,44 @@ Pre-registered predictions (from the code read in § 3; to be graded, not assume
 Reverse-engineering step after the run: `objdump -d --no-show-raw-insn` the
 `get_count` of each arm per tier, then count `vcmppd`, `vblendvpd`/`vblendmpd`,
 `kortest`/`vmovmskpd`, and scalar `vucomisd` in the loop body.
+
+## 6. Mandelbrot benchmark — MEASURED 2026-11-17 (predictions graded)
+
+Fork `AdaWorldAPI/mandelbrot-simd` @ `ccf4b81` (wide 1.7.1, pulp 0.22.3 `x86-v4`, ndarray master `09cdaa1`).
+3200×3200, 50 iterations, in-process timer, median of 15 (min in brackets), ms. Host: Xeon with AVX-512,
+4 cores. Every arm is first checked equal to the scalar output. Tier is from the binary's own header.
+
+| arm | v4, 1 thread | v4, 4 threads | v3, 1 thread | v3, 4 threads |
+|---|---|---|---|---|
+| scalar | 639 (581) | 172 (161) | 645 (594) | 179 (157) |
+| autovect | 355 (325) | 104 (90) | 348 (278) | 102 (93) |
+| wide `f64x4` | 231 (206) | 58 (52) | 214 (196) | 56 (52) |
+| wide `f64x8` (wide8) | 156 (151) | 44 (40) | 152 (139) | 39 (35) |
+| pulp | 155 (131) | 42 (39) | 160 (150) | 41 (37) |
+| **ndarray `F64x8`** | **170 (163)** | **47 (44)** | **199 (187)** | **57 (49)** |
+| ndarray before PR #435 (`bf112d2`) | — | — | 229 (201) | 65 (51) |
+
+Run-to-run noise on the control arms between the two v3 sessions was about 6% (wide8 152 vs 162).
+
+Predictions (§ 5):
+- **P1 holds.** v4: ndarray is 9% behind pulp and wide8 single-threaded (170 vs 155/156), 8–11% with 4 threads.
+- **P2 holds.** v4: wide `f64x4` is 1.48× slower than wide8.
+- **P3 FAILED, kill condition hit.** Before the PR, ndarray on v3 was 1.41–1.46× slower than wide8/pulp, not
+  ≥ 2×. The pre-PR disassembly shows why: LLVM had already vectorized most of the "scalar" compare loop
+  (`vcmplepd`, `vcmpnlepd`, `vblendvpd` present, with `vcmplesd` / `vucomisd` / 4× `sete` remnants). TD1 was
+  real but much cheaper than I claimed.
+- **P4 holds.** pulp is as fast on the v3 build as on v4 (160 vs 155): its code in the v3 binary contains
+  `zmm` instructions (2 symbols), the wide and ndarray arms contain none.
+
+Effect of F1/F2 (PR #435) on v3: 229 → 199 ms single-threaded (13%), 65 → 57 ms with 4 threads; hot loop
+176 → 141 instructions, all scalar compares gone.
+
+Why ndarray is still behind, from the disassembly of the hot closure:
+- **v3 (1.24–1.30× behind):** the compare result is packed to the public bitmask and re-expanded for
+  `select` — `vmovmskpd` ×2, then `vpbroadcastq` ×3 + `vpand` ×4 + `vcmpneqpd` ×2. wide8 keeps the lane mask
+  in the register (`vcmple_oqpd` + `vandpd`). This is the cost of `F64Mask8(pub u8)` staying as it is.
+- **v4 (≈ 9% behind):** compare and select are single mask-register ops, same as the others. The difference
+  seen in the loop is the count conversion: the arm converts 8 lanes one at a time (`vcvttsd2si` ×8 with
+  `vminsd`/`vmaxsd` saturation) because the facade has no vector `F64x8` → integer conversion; wide uses
+  `round_int`, pulp counts in `u64` lanes with `select_u64s`. Not measured in isolation.
+- wide's AVX2 `any()` lowers to 8–16 scalar `vucomisd` + `cmov` here, yet wide8 is still the fastest v3 arm.
