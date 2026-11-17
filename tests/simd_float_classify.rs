@@ -8,6 +8,7 @@
 //! a relative error of 2^-11 on normal inputs whose reciprocal is normal
 //! (the documented contract; AVX-512 `vrcp14` is 2^-14, AVX `vrcpps`
 //! 1.5·2^-12, the other arms are exact).
+#![cfg(feature = "std")]
 
 use ndarray::simd::{F32x16, F32x8, F64x4, F64x8};
 

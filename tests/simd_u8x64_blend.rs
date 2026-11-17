@@ -2,6 +2,7 @@
 //! `saturating_add` and `saturating_sub` against per-byte `u8` arithmetic,
 //! on whichever arm the build compiled (the AVX2 arm realizes them as two
 //! `U8x32` halves and a shuffle-free bit-to-byte mask expansion since F7).
+#![cfg(feature = "std")]
 
 use ndarray::simd::U8x64;
 

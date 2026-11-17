@@ -15,6 +15,7 @@
 //! NaN in min/max is deliberately not graded: x86 `vminps` returns the second
 //! operand while the scalar arm's `f32::min` returns the non-NaN one; that
 //! difference predates this plan and is documented on the methods.
+#![cfg(feature = "std")]
 
 use ndarray::simd::{F32Mask16, F32Mask8, F32x16, F32x8, F64Mask4, F64Mask8, F64x4, F64x8};
 

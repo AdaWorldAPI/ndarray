@@ -3,6 +3,7 @@
 //! `I16x32::mul_high` (high 16 bits of the 32-bit product), against `u64` /
 //! `u32` / `i32` arithmetic computed here, so the file grades whichever arm
 //! the build compiled.
+#![cfg(feature = "std")]
 
 use ndarray::simd::{I16x32, U16x32, U32x16};
 
