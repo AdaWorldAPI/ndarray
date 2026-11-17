@@ -1,3 +1,19 @@
+## 2026-11-17 — IEEE bit-exact gate in CI: parity group 26 `check_ieee_bit_exact` + `IEEE_GOLDEN`
+
+`crates/simd-masking-parity` gains one check group, so every existing realization row of
+`.github/workflows/simd-matrix.yaml` runs it (no new job). Per lane vs the scalar IEEE op: + - * /, sqrt,
+single-rounded mul_add, round (ties-even), floor, abs, copysign, recip, six compares, is_nan/is_finite/
+is_infinite, simd_min/max, on F32x16, F64x8, F32x8, F64x4 (600 rounds each: specials + random bit patterns
+incl. subnormals/NaN/Inf), plus slice add_mul_f32/f64 at 10 remainder lengths. All results fold into an
+FNV-1a digest that must equal `IEEE_GOLDEN = 0xEE52_C9E7_819D_32C3`.
+Measured: identical digest printed on native v4, pinned v3, avx-qemu, v2-qemu, neon-qemu and nightly;
+wasm, wasm-scalar, wasm-relaxed return rc=0 (they compare against the same constant). Disable run: F32x16::
+recip → vrcp14 gives code 0xC00A (exit 1). Not pinned, by IEEE or by pre-existing behaviour (documented in
+the group's comment): NaN sign/payload (canonicalized); min/max of +0 vs -0; min/max with a NaN operand on
+the 512-bit types (AVX-512 = raw vminps, others ignore NaN — master behaviour, untouched); reductions
+(summation order). The parity crate has 4 pre-existing clippy hits (same count before this change; not CI-
+gated); none in the new section.
+
 ## 2026-11-17 — LEARNED from the reference code (operator pointed at BF16x16, F16/F32 + add_mul, as_chunks)
 
 Read-only study; nothing in these files was changed. I had mislabelled them as "debt" (plan F8, now withdrawn).

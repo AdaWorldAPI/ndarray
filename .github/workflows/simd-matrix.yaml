@@ -52,6 +52,15 @@ permissions:
 # backend selected the instruction it is REQUIRED to select at opt-level 3.
 # Neither replaces the other.
 #
+# IEEE 754 bit-exactness rides on every one of these rows: the parity
+# program's `check_ieee_bit_exact` group compares each float method of the
+# facade (`+ - * /`, sqrt, single-rounded FMA, round-half-even, floor, abs,
+# copysign, 1/x, compares, classification, slice `add_mul`) lane by lane with
+# the scalar IEEE operation AND folds every result into one digest that must
+# equal `IEEE_GOLDEN` — the same constant on every realization. A row that
+# passes therefore proves "same bits as every other row", not just "same as
+# its own scalar". The native rows print `ieee-digest=…` in the log.
+#
 # The scalar realization has no host of its own: it is what `simd.rs` selects
 # on wasm32 WITHOUT `+simd128`, so the `scalar` row is a wasm32 build with the
 # feature off, run under node. `nightly` is the `core::simd` realization
