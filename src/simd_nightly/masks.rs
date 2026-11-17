@@ -179,3 +179,49 @@ impl F64Mask4 {
         self.0.any()
     }
 }
+
+// ============================================================================
+// Shared mask API completion: `none` and lane-wise `& | ^ !`, matching the
+// stable arms (`simd_mask_api.rs`, and the x86 vector masks).
+// ============================================================================
+
+macro_rules! nightly_mask_logic {
+    ($($mask:ident),*) => {$(
+        impl $mask {
+            /// Returns `true` if no lane is set.
+            #[inline(always)]
+            pub fn none(self) -> bool {
+                !self.0.any()
+            }
+        }
+        impl core::ops::BitAnd for $mask {
+            type Output = Self;
+            #[inline(always)]
+            fn bitand(self, rhs: Self) -> Self {
+                Self(self.0 & rhs.0)
+            }
+        }
+        impl core::ops::BitOr for $mask {
+            type Output = Self;
+            #[inline(always)]
+            fn bitor(self, rhs: Self) -> Self {
+                Self(self.0 | rhs.0)
+            }
+        }
+        impl core::ops::BitXor for $mask {
+            type Output = Self;
+            #[inline(always)]
+            fn bitxor(self, rhs: Self) -> Self {
+                Self(self.0 ^ rhs.0)
+            }
+        }
+        impl core::ops::Not for $mask {
+            type Output = Self;
+            #[inline(always)]
+            fn not(self) -> Self {
+                Self(!self.0)
+            }
+        }
+    )*};
+}
+nightly_mask_logic!(F32Mask16, F32Mask8, F64Mask8, F64Mask4);

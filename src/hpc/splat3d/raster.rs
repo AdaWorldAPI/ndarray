@@ -48,7 +48,7 @@ pub const T_SATURATION_EPS: f32 = 1e-4;
 /// Combine two F32Mask16 with bitwise AND (both conditions must be true).
 #[inline(always)]
 fn mask_and(a: F32Mask16, b: F32Mask16) -> F32Mask16 {
-    F32Mask16(a.0 & b.0)
+    a & b
 }
 
 // ════════════════════════════════════════════════════════════════════════════

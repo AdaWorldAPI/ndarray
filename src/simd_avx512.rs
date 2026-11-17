@@ -286,6 +286,8 @@ impl PartialEq for F32x16 {
 #[repr(transparent)]
 pub struct F32Mask16(pub __mmask16);
 
+impl_bitmask_mask_api!(F32Mask16, u16, 16, F32x16);
+
 impl F32Mask16 {
     /// The mask as a packed 16-bit bitmask, LSB-first (bit `i` = lane `i`).
     /// The one representation-independent reading of a compare result: every
@@ -505,6 +507,8 @@ impl PartialEq for F64x8 {
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
 pub struct F64Mask8(pub __mmask8);
+
+impl_bitmask_mask_api!(F64Mask8, u8, 8, F64x8);
 
 impl F64Mask8 {
     /// Lane `i` of the comparison is bit `i` of the result.
@@ -2995,6 +2999,217 @@ impl F32x8 {
             Self(_mm256_and_ps(self.0, mask))
         }
     }
+
+    /// Smallest lane, folded with `vminps`: on a NaN lane the result follows
+    /// `vminps` (the second operand wins), as on `F32x16::reduce_min`.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let v = F32x8::from_array([3.0, -1.0, 7.0, 2.0, 9.0, 0.5, 4.0, 8.0]);
+    /// assert_eq!(v.reduce_min(), -1.0);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_min(self) -> f32 {
+        // SAFETY: AVX/SSE3 register-only ops; this type is only compiled into
+        // x86 arms that have AVX (`simd.rs` routes v2 to the scalar backend).
+        unsafe {
+            let m4 = _mm_min_ps(_mm256_castps256_ps128(self.0), _mm256_extractf128_ps(self.0, 1));
+            let m2 = _mm_min_ps(m4, _mm_movehl_ps(m4, m4));
+            _mm_cvtss_f32(_mm_min_ss(m2, _mm_movehdup_ps(m2)))
+        }
+    }
+
+    /// Largest lane, folded with `vmaxps` (NaN: second operand wins).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let v = F32x8::from_array([3.0, -1.0, 7.0, 2.0, 9.0, 0.5, 4.0, 8.0]);
+    /// assert_eq!(v.reduce_max(), 9.0);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_max(self) -> f32 {
+        // SAFETY: as `reduce_min`.
+        unsafe {
+            let m4 = _mm_max_ps(_mm256_castps256_ps128(self.0), _mm256_extractf128_ps(self.0, 1));
+            let m2 = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
+            _mm_cvtss_f32(_mm_max_ss(m2, _mm_movehdup_ps(m2)))
+        }
+    }
+
+    /// Lane-wise minimum, `vminps`: if either lane is NaN the lane of `other`
+    /// is returned (the same rule as `F32x16::simd_min` on AVX-512).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let m = F32x8::splat(1.0).simd_min(F32x8::splat(2.0));
+    /// assert_eq!(m.to_array(), [1.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        // SAFETY: AVX register-only op (see `reduce_min`).
+        Self(unsafe { _mm256_min_ps(self.0, other.0) })
+    }
+
+    /// Lane-wise maximum, `vmaxps` (NaN: the lane of `other` is returned).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(1.0).simd_max(F32x8::splat(2.0)).to_array(), [2.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_max_ps(self.0, other.0) })
+    }
+
+    /// `self.simd_max(lo).simd_min(hi)`.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let c = F32x8::splat(5.0).simd_clamp(F32x8::splat(0.0), F32x8::splat(1.0));
+    /// assert_eq!(c.to_array(), [1.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn simd_clamp(self, lo: Self, hi: Self) -> Self {
+        self.simd_max(lo).simd_min(hi)
+    }
+
+    /// Lane-wise square root, `vsqrtps` (correctly rounded).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(9.0).sqrt().to_array(), [3.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn sqrt(self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_sqrt_ps(self.0) })
+    }
+
+    /// Round to nearest, ties to even (`vroundps` imm 0x08, like the AVX-512
+    /// `roundscale` and the NEON/wasm nearest).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let r = F32x8::from_array([0.5, 1.5, 2.5, -0.5, -1.5, 2.4, 2.6, -2.6]).round();
+    /// assert_eq!(r.to_array(), [0.0, 2.0, 2.0, -0.0, -2.0, 2.0, 3.0, -3.0]);
+    /// ```
+    #[inline(always)]
+    pub fn round(self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_round_ps::<0x08>(self.0) })
+    }
+
+    /// Round toward negative infinity (`vroundps` imm 0x09).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(-1.5).floor().to_array(), [-2.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn floor(self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_round_ps::<0x09>(self.0) })
+    }
+
+    /// The raw IEEE-754 bits of each lane.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(1.0).to_bits().to_array(), [0x3F80_0000; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn to_bits(self) -> U32x8 {
+        let mut out = [0u32; 8];
+        // SAFETY: `out` is 32 writable bytes; `storeu` has no alignment need.
+        unsafe { _mm256_storeu_si256(out.as_mut_ptr().cast::<__m256i>(), _mm256_castps_si256(self.0)) };
+        U32x8::from_array(out)
+    }
+
+    /// Reinterprets raw IEEE-754 bits as lanes (inverse of `to_bits`).
+    ///
+    /// ```
+    /// use ndarray::simd::{F32x8, U32x8};
+    /// assert_eq!(F32x8::from_bits(U32x8::splat(0x4000_0000)).to_array(), [2.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn from_bits(bits: U32x8) -> Self {
+        let a = bits.to_array();
+        // SAFETY: `a` is 32 readable bytes; `loadu` has no alignment need.
+        Self(unsafe { _mm256_castsi256_ps(_mm256_loadu_si256(a.as_ptr().cast::<__m256i>())) })
+    }
+
+    /// Lane-wise `==` (ordered: NaN compares unequal).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert!(F32x8::splat(1.0).simd_eq(F32x8::splat(1.0)).all());
+    /// assert!(F32x8::splat(f32::NAN).simd_eq(F32x8::splat(f32::NAN)).none());
+    /// ```
+    #[inline(always)]
+    pub fn simd_eq(self, other: Self) -> F32Mask8 {
+        // SAFETY: AVX register-only op.
+        F32Mask8(unsafe { _mm256_cmp_ps::<_CMP_EQ_OQ>(self.0, other.0) })
+    }
+
+    /// Lane-wise `!=` (unordered: a NaN lane compares unequal).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert!(F32x8::splat(f32::NAN).simd_ne(F32x8::splat(f32::NAN)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_ne(self, other: Self) -> F32Mask8 {
+        // SAFETY: AVX register-only op.
+        F32Mask8(unsafe { _mm256_cmp_ps::<_CMP_NEQ_UQ>(self.0, other.0) })
+    }
+
+    /// Lane-wise `<` (ordered: false on NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let m = F32x8::from_array([0.0, 2.0, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0]).simd_lt(F32x8::splat(1.0));
+    /// assert_eq!(m.to_bitmask(), 0b0101_0101);
+    /// ```
+    #[inline(always)]
+    pub fn simd_lt(self, other: Self) -> F32Mask8 {
+        // SAFETY: AVX register-only op.
+        F32Mask8(unsafe { _mm256_cmp_ps::<_CMP_LT_OS>(self.0, other.0) })
+    }
+
+    /// Lane-wise `<=` (ordered: false on NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert!(F32x8::splat(1.0).simd_le(F32x8::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_le(self, other: Self) -> F32Mask8 {
+        // SAFETY: AVX register-only op.
+        F32Mask8(unsafe { _mm256_cmp_ps::<_CMP_LE_OS>(self.0, other.0) })
+    }
+
+    /// Lane-wise `>` (ordered: false on NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert!(F32x8::splat(2.0).simd_gt(F32x8::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_gt(self, other: Self) -> F32Mask8 {
+        other.simd_lt(self)
+    }
+
+    /// Lane-wise `>=` (ordered: false on NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert!(F32x8::splat(1.0).simd_ge(F32x8::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_ge(self, other: Self) -> F32Mask8 {
+        other.simd_le(self)
+    }
 }
 
 impl Add for F32x8 {
@@ -3144,6 +3359,207 @@ impl F64x4 {
             Self::from_array(core::array::from_fn(|i| x[i].exact_fma(y[i], z[i])))
         }
     }
+
+    /// Smallest lane, folded with `vminpd` (NaN: second operand wins).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::from_array([3.0, -1.0, 7.0, 2.0]).reduce_min(), -1.0);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_min(self) -> f64 {
+        // SAFETY: AVX/SSE2 register-only ops (x86 arms with AVX only).
+        unsafe {
+            let m2 = _mm_min_pd(_mm256_castpd256_pd128(self.0), _mm256_extractf128_pd(self.0, 1));
+            _mm_cvtsd_f64(_mm_min_sd(m2, _mm_unpackhi_pd(m2, m2)))
+        }
+    }
+
+    /// Largest lane, folded with `vmaxpd` (NaN: second operand wins).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::from_array([3.0, -1.0, 7.0, 2.0]).reduce_max(), 7.0);
+    /// ```
+    #[inline(always)]
+    pub fn reduce_max(self) -> f64 {
+        // SAFETY: as `reduce_min`.
+        unsafe {
+            let m2 = _mm_max_pd(_mm256_castpd256_pd128(self.0), _mm256_extractf128_pd(self.0, 1));
+            _mm_cvtsd_f64(_mm_max_sd(m2, _mm_unpackhi_pd(m2, m2)))
+        }
+    }
+
+    /// Lane-wise minimum, `vminpd`: if either lane is NaN the lane of `other`
+    /// is returned (the same rule as `F64x8::simd_min` on AVX-512).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(1.0).simd_min(F64x4::splat(2.0)).to_array(), [1.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn simd_min(self, other: Self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_min_pd(self.0, other.0) })
+    }
+
+    /// Lane-wise maximum, `vmaxpd` (NaN: the lane of `other` is returned).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(1.0).simd_max(F64x4::splat(2.0)).to_array(), [2.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn simd_max(self, other: Self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_max_pd(self.0, other.0) })
+    }
+
+    /// `self.simd_max(lo).simd_min(hi)`.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// let c = F64x4::splat(-5.0).simd_clamp(F64x4::splat(0.0), F64x4::splat(1.0));
+    /// assert_eq!(c.to_array(), [0.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn simd_clamp(self, lo: Self, hi: Self) -> Self {
+        self.simd_max(lo).simd_min(hi)
+    }
+
+    /// Lane-wise square root, `vsqrtpd` (correctly rounded).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(16.0).sqrt().to_array(), [4.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn sqrt(self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_sqrt_pd(self.0) })
+    }
+
+    /// Round to nearest, ties to even (`vroundpd` imm 0x08).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::from_array([0.5, 1.5, 2.5, -2.5]).round().to_array(), [0.0, 2.0, 2.0, -2.0]);
+    /// ```
+    #[inline(always)]
+    pub fn round(self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_round_pd::<0x08>(self.0) })
+    }
+
+    /// Round toward negative infinity (`vroundpd` imm 0x09).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(2.7).floor().to_array(), [2.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn floor(self) -> Self {
+        // SAFETY: AVX register-only op.
+        Self(unsafe { _mm256_round_pd::<0x09>(self.0) })
+    }
+
+    /// The raw IEEE-754 bits of each lane.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(1.0).to_bits().to_array(), [0x3FF0_0000_0000_0000; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn to_bits(self) -> U64x4 {
+        let mut out = [0u64; 4];
+        // SAFETY: `out` is 32 writable bytes; `storeu` has no alignment need.
+        unsafe { _mm256_storeu_si256(out.as_mut_ptr().cast::<__m256i>(), _mm256_castpd_si256(self.0)) };
+        U64x4::from_array(out)
+    }
+
+    /// Reinterprets raw IEEE-754 bits as lanes (inverse of `to_bits`).
+    ///
+    /// ```
+    /// use ndarray::simd::{F64x4, U64x4};
+    /// assert_eq!(F64x4::from_bits(U64x4::splat(0x4000_0000_0000_0000)).to_array(), [2.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn from_bits(bits: U64x4) -> Self {
+        let a = bits.to_array();
+        // SAFETY: `a` is 32 readable bytes; `loadu` has no alignment need.
+        Self(unsafe { _mm256_castsi256_pd(_mm256_loadu_si256(a.as_ptr().cast::<__m256i>())) })
+    }
+
+    /// Lane-wise `==` (ordered: NaN compares unequal).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert!(F64x4::splat(1.0).simd_eq(F64x4::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_eq(self, other: Self) -> F64Mask4 {
+        // SAFETY: AVX register-only op.
+        F64Mask4(unsafe { _mm256_cmp_pd::<_CMP_EQ_OQ>(self.0, other.0) })
+    }
+
+    /// Lane-wise `!=` (unordered: a NaN lane compares unequal).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert!(F64x4::splat(f64::NAN).simd_ne(F64x4::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_ne(self, other: Self) -> F64Mask4 {
+        // SAFETY: AVX register-only op.
+        F64Mask4(unsafe { _mm256_cmp_pd::<_CMP_NEQ_UQ>(self.0, other.0) })
+    }
+
+    /// Lane-wise `<` (ordered: false on NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// let m = F64x4::from_array([0.0, 2.0, 0.0, f64::NAN]).simd_lt(F64x4::splat(1.0));
+    /// assert_eq!(m.to_bitmask(), 0b0101);
+    /// ```
+    #[inline(always)]
+    pub fn simd_lt(self, other: Self) -> F64Mask4 {
+        // SAFETY: AVX register-only op.
+        F64Mask4(unsafe { _mm256_cmp_pd::<_CMP_LT_OS>(self.0, other.0) })
+    }
+
+    /// Lane-wise `<=` (ordered: false on NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert!(F64x4::splat(1.0).simd_le(F64x4::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_le(self, other: Self) -> F64Mask4 {
+        // SAFETY: AVX register-only op.
+        F64Mask4(unsafe { _mm256_cmp_pd::<_CMP_LE_OS>(self.0, other.0) })
+    }
+
+    /// Lane-wise `>` (ordered: false on NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert!(F64x4::splat(2.0).simd_gt(F64x4::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_gt(self, other: Self) -> F64Mask4 {
+        other.simd_lt(self)
+    }
+
+    /// Lane-wise `>=` (ordered: false on NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert!(F64x4::splat(1.0).simd_ge(F64x4::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn simd_ge(self, other: Self) -> F64Mask4 {
+        other.simd_le(self)
+    }
 }
 
 impl Add for F64x4 {
@@ -3217,6 +3633,270 @@ impl PartialEq for F64x4 {
         self.to_array() == other.to_array()
     }
 }
+
+// ============================================================================
+// F32Mask8 / F64Mask4 — 256-bit compare results as full-width lane masks
+// ============================================================================
+//
+// Every lane is all-ones (true) or all-zeros (false), the natural output of
+// `vcmpps`/`vcmppd`. `select` is then one `vblendv`, `to_bitmask` one
+// `vmovmsk`, and the AND/OR/XOR are one float-domain logic op each. All of
+// these are AVX1, so the same code serves the AVX-512, AVX2 and AVX arms
+// (on AVX-512VL LLVM may keep the result in a k-register). The AVX2
+// `F32Mask16`/`F64Mask8` are pairs of these.
+
+/// Lane mask produced by `F32x8` comparisons (one all-ones/all-zeros lane per `f32`).
+///
+/// ```
+/// use ndarray::simd::F32x8;
+/// let x = F32x8::from_array([1.0, 5.0, 2.0, 6.0, 3.0, 7.0, 4.0, 8.0]);
+/// let small = x.simd_lt(F32x8::splat(4.5));
+/// assert_eq!(small.to_bitmask(), 0b0101_0101);
+/// assert_eq!(small.select(x, F32x8::splat(0.0)).reduce_sum(), 10.0);
+/// ```
+#[derive(Copy, Clone, Debug)]
+#[repr(transparent)]
+pub struct F32Mask8(pub(crate) __m256);
+
+impl F32Mask8 {
+    /// Bit `i` is lane `i` (`vmovmskps`).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(1.0).simd_lt(F32x8::splat(2.0)).to_bitmask(), 0xFF);
+    /// ```
+    #[inline(always)]
+    pub fn to_bitmask(self) -> u8 {
+        // SAFETY: AVX register-only op; the result has only the low 8 bits set.
+        unsafe { _mm256_movemask_ps(self.0) as u8 }
+    }
+
+    /// Lane `i` is set iff bit `i` of `bits` is set.
+    ///
+    /// Each bit is ANDed into the exponent field of its lane (bit `i` →
+    /// `2^i << 23`), so a set bit leaves a normal, non-zero float and a clear
+    /// bit leaves `+0.0`; `vcmpps NEQ 0` turns that into the lane mask. No
+    /// shuffle, no table, and nothing denormal (so DAZ cannot flip a lane).
+    ///
+    /// ```
+    /// use ndarray::simd::{F32Mask8, F32x8};
+    /// let m = F32Mask8::from_bitmask(0b1000_0001);
+    /// assert_eq!(m.to_bitmask(), 0b1000_0001);
+    /// let v = m.select(F32x8::splat(1.0), F32x8::splat(0.0)).to_array();
+    /// assert_eq!(v, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]);
+    /// ```
+    #[inline(always)]
+    pub fn from_bitmask(bits: u8) -> Self {
+        // SAFETY: AVX register-only ops.
+        unsafe {
+            let broadcast = _mm256_castsi256_ps(_mm256_set1_epi32(i32::from(bits) << 23));
+            let lane_bit = _mm256_castsi256_ps(_mm256_setr_epi32(
+                1 << 23,
+                2 << 23,
+                4 << 23,
+                8 << 23,
+                16 << 23,
+                32 << 23,
+                64 << 23,
+                128 << 23,
+            ));
+            Self(_mm256_cmp_ps::<_CMP_NEQ_UQ>(_mm256_and_ps(broadcast, lane_bit), _mm256_setzero_ps()))
+        }
+    }
+
+    /// Lane-wise `if mask { true_val } else { false_val }` (`vblendvps`).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let m = F32x8::splat(1.0).simd_lt(F32x8::splat(2.0));
+    /// assert_eq!(m.select(F32x8::splat(3.0), F32x8::splat(4.0)).to_array(), [3.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn select(self, true_val: F32x8, false_val: F32x8) -> F32x8 {
+        // SAFETY: AVX register-only op.
+        F32x8(unsafe { _mm256_blendv_ps(false_val.0, true_val.0, self.0) })
+    }
+
+    /// `true` if at least one lane is set.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert!(F32x8::splat(1.0).simd_lt(F32x8::splat(2.0)).any());
+    /// ```
+    #[inline(always)]
+    pub fn any(self) -> bool {
+        self.to_bitmask() != 0
+    }
+
+    /// `true` if every lane is set.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert!(F32x8::splat(1.0).simd_le(F32x8::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn all(self) -> bool {
+        self.to_bitmask() == 0xFF
+    }
+
+    /// `true` if no lane is set — the early-exit test of a masked loop.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert!(F32x8::splat(3.0).simd_lt(F32x8::splat(2.0)).none());
+    /// ```
+    #[inline(always)]
+    pub fn none(self) -> bool {
+        self.to_bitmask() == 0
+    }
+}
+
+/// Lane mask produced by `F64x4` comparisons (one all-ones/all-zeros lane per `f64`).
+///
+/// ```
+/// use ndarray::simd::F64x4;
+/// let x = F64x4::from_array([1.0, 5.0, 2.0, 6.0]);
+/// let m = x.simd_lt(F64x4::splat(4.5));
+/// assert_eq!(m.to_bitmask(), 0b0101);
+/// assert_eq!(m.select(x, F64x4::splat(0.0)).reduce_sum(), 3.0);
+/// ```
+#[derive(Copy, Clone, Debug)]
+#[repr(transparent)]
+pub struct F64Mask4(pub(crate) __m256d);
+
+impl F64Mask4 {
+    /// Bit `i` is lane `i` (`vmovmskpd`).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(1.0).simd_lt(F64x4::splat(2.0)).to_bitmask(), 0xF);
+    /// ```
+    #[inline(always)]
+    pub fn to_bitmask(self) -> u8 {
+        // SAFETY: AVX register-only op; the result has only the low 4 bits set.
+        unsafe { _mm256_movemask_pd(self.0) as u8 }
+    }
+
+    /// Lane `i` is set iff bit `i` of `bits` is set; bits 4..8 are ignored.
+    /// Same construction as `F32Mask8::from_bitmask` (bit `i` → `2^i << 52`).
+    ///
+    /// ```
+    /// use ndarray::simd::{F64Mask4, F64x4};
+    /// let m = F64Mask4::from_bitmask(0b1001);
+    /// assert_eq!(m.to_bitmask(), 0b1001);
+    /// assert_eq!(m.select(F64x4::splat(1.0), F64x4::splat(0.0)).to_array(), [1.0, 0.0, 0.0, 1.0]);
+    /// ```
+    #[inline(always)]
+    pub fn from_bitmask(bits: u8) -> Self {
+        // SAFETY: AVX register-only ops.
+        unsafe {
+            let broadcast = _mm256_castsi256_pd(_mm256_set1_epi64x(i64::from(bits) << 52));
+            let lane_bit = _mm256_castsi256_pd(_mm256_setr_epi64x(1 << 52, 2 << 52, 4 << 52, 8 << 52));
+            Self(_mm256_cmp_pd::<_CMP_NEQ_UQ>(_mm256_and_pd(broadcast, lane_bit), _mm256_setzero_pd()))
+        }
+    }
+
+    /// Lane-wise `if mask { true_val } else { false_val }` (`vblendvpd`).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// let m = F64x4::splat(1.0).simd_lt(F64x4::splat(2.0));
+    /// assert_eq!(m.select(F64x4::splat(3.0), F64x4::splat(4.0)).to_array(), [3.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn select(self, true_val: F64x4, false_val: F64x4) -> F64x4 {
+        // SAFETY: AVX register-only op.
+        F64x4(unsafe { _mm256_blendv_pd(false_val.0, true_val.0, self.0) })
+    }
+
+    /// `true` if at least one lane is set.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert!(F64x4::splat(1.0).simd_lt(F64x4::splat(2.0)).any());
+    /// ```
+    #[inline(always)]
+    pub fn any(self) -> bool {
+        self.to_bitmask() != 0
+    }
+
+    /// `true` if every lane is set.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert!(F64x4::splat(1.0).simd_le(F64x4::splat(1.0)).all());
+    /// ```
+    #[inline(always)]
+    pub fn all(self) -> bool {
+        self.to_bitmask() == 0xF
+    }
+
+    /// `true` if no lane is set.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert!(F64x4::splat(3.0).simd_lt(F64x4::splat(2.0)).none());
+    /// ```
+    #[inline(always)]
+    pub fn none(self) -> bool {
+        self.to_bitmask() == 0
+    }
+}
+
+macro_rules! impl_vector_mask_logic {
+    ($mask:ident, $and:ident, $or:ident, $xor:ident, $ones:expr) => {
+        impl BitAnd for $mask {
+            type Output = Self;
+            /// Lane-wise AND.
+            #[inline(always)]
+            fn bitand(self, rhs: Self) -> Self {
+                // SAFETY: AVX register-only op.
+                Self(unsafe { $and(self.0, rhs.0) })
+            }
+        }
+        impl BitOr for $mask {
+            type Output = Self;
+            /// Lane-wise OR.
+            #[inline(always)]
+            fn bitor(self, rhs: Self) -> Self {
+                // SAFETY: AVX register-only op.
+                Self(unsafe { $or(self.0, rhs.0) })
+            }
+        }
+        impl BitXor for $mask {
+            type Output = Self;
+            /// Lane-wise XOR.
+            #[inline(always)]
+            fn bitxor(self, rhs: Self) -> Self {
+                // SAFETY: AVX register-only op.
+                Self(unsafe { $xor(self.0, rhs.0) })
+            }
+        }
+        impl Not for $mask {
+            type Output = Self;
+            /// Lane-wise NOT (XOR with all-ones).
+            #[inline(always)]
+            fn not(self) -> Self {
+                // SAFETY: AVX register-only ops.
+                Self(unsafe { $xor(self.0, $ones) })
+            }
+        }
+    };
+}
+impl_vector_mask_logic!(
+    F32Mask8,
+    _mm256_and_ps,
+    _mm256_or_ps,
+    _mm256_xor_ps,
+    _mm256_castsi256_ps(_mm256_set1_epi32(-1))
+);
+impl_vector_mask_logic!(
+    F64Mask4,
+    _mm256_and_pd,
+    _mm256_or_pd,
+    _mm256_xor_pd,
+    _mm256_castsi256_pd(_mm256_set1_epi64x(-1))
+);
 
 // ============================================================================
 // Type aliases — lowercase names matching portable_simd convention

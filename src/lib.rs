@@ -234,6 +234,11 @@ mod zip;
 
 mod dimension;
 
+/// Shared mask API macro (`from_bitmask`, `any`, `all`, `none`, `& | ^ !`)
+/// for the bitmask-backed SIMD masks; must precede every backend module.
+#[macro_use]
+mod simd_mask_api;
+
 /// Portable SIMD types — `crate::simd::f32x16` today, `std::simd::f32x16` tomorrow.
 #[cfg(feature = "std")]
 #[allow(clippy::all, missing_docs, dead_code, unused_variables, unused_imports)]

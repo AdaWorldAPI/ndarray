@@ -513,12 +513,45 @@ impl_float_type!(F64x8, f64, 8, F64Mask8, u8);
 
 // 256-bit AVX2 float types
 // The macro `impl_float_type!` already emits `pub struct $mask(pub $mask_prim);`,
-// so calling it with `F32Mask8Scalar` / `F64Mask4Scalar` defines those mask
-// structs. The previous explicit re-declaration was a duplicate that
+// so calling it with `F32Mask8` / `F64Mask4` defines those mask structs
+// (named `F32Mask8Scalar` / `F64Mask4Scalar` until the 256-bit masks were
+// exported on every arm, plan simd-fruits-integration-v1 F1). The previous explicit re-declaration was a duplicate that
 // tripped E0428 + 6× E0119 on i686-unknown-linux-gnu (where this scalar
 // module compiles — `#[cfg(not(target_arch = "x86_64"))]`).
-impl_float_type!(F32x8, f32, 8, F32Mask8Scalar, u8);
-impl_float_type!(F64x4, f64, 4, F64Mask4Scalar, u8);
+impl_float_type!(F32x8, f32, 8, F32Mask8, u8);
+impl_float_type!(F64x4, f64, 4, F64Mask4, u8);
+
+// Shared mask API (from_bitmask / any / all / none / & | ^ !) on every mask.
+impl_bitmask_mask_api!(F32Mask16, u16, 16, F32x16);
+impl_bitmask_mask_api!(F64Mask8, u8, 8, F64x8);
+impl_bitmask_mask_api!(F32Mask8, u8, 8, F32x8);
+impl_bitmask_mask_api!(F64Mask4, u8, 4, F64x4);
+
+impl F32Mask8 {
+    /// Lane `i` of the comparison is bit `i` of the result.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(1.0).simd_lt(F32x8::splat(2.0)).to_bitmask(), 0xFF);
+    /// ```
+    #[inline(always)]
+    pub fn to_bitmask(self) -> u8 {
+        self.0
+    }
+}
+
+impl F64Mask4 {
+    /// Lane `i` of the comparison is bit `i` of the result.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(1.0).simd_lt(F64x4::splat(2.0)).to_bitmask(), 0xF);
+    /// ```
+    #[inline(always)]
+    pub fn to_bitmask(self) -> u8 {
+        self.0
+    }
+}
 
 // 512-bit integer types
 impl_int_type!(U8x64, u8, 64, 0u8);
@@ -1521,6 +1554,53 @@ impl F64x8 {
             out[i] = f64::from_bits(bits.0[i]);
         }
         Self(out)
+    }
+}
+
+// Extra for the 256-bit float types: to_bits/from_bits (same API as the x86 arms).
+impl F32x8 {
+    /// The raw IEEE-754 bits of each lane.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(1.0).to_bits().to_array(), [0x3F80_0000; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn to_bits(self) -> U32x8 {
+        U32x8(self.0.map(f32::to_bits))
+    }
+    /// Reinterprets raw IEEE-754 bits as lanes (inverse of `to_bits`).
+    ///
+    /// ```
+    /// use ndarray::simd::{F32x8, U32x8};
+    /// assert_eq!(F32x8::from_bits(U32x8::splat(0x4000_0000)).to_array(), [2.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn from_bits(bits: U32x8) -> Self {
+        Self(bits.0.map(f32::from_bits))
+    }
+}
+
+impl F64x4 {
+    /// The raw IEEE-754 bits of each lane.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(1.0).to_bits().to_array(), [0x3FF0_0000_0000_0000; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn to_bits(self) -> U64x4 {
+        U64x4(self.0.map(f64::to_bits))
+    }
+    /// Reinterprets raw IEEE-754 bits as lanes (inverse of `to_bits`).
+    ///
+    /// ```
+    /// use ndarray::simd::{F64x4, U64x4};
+    /// assert_eq!(F64x4::from_bits(U64x4::splat(0x4000_0000_0000_0000)).to_array(), [2.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn from_bits(bits: U64x4) -> Self {
+        Self(bits.0.map(f64::from_bits))
     }
 }
 

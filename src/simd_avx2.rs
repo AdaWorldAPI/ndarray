@@ -6,7 +6,7 @@
 //! Targets: Intel Meteor Lake (U9 185H), Alder Lake, AMD Zen 2+, etc.
 //! These CPUs have AVX2 + AVX-VNNI (256-bit) but no AVX-512.
 
-use crate::simd_avx512::{f32x8, f64x4};
+use crate::simd_avx512::{f32x8, f64x4, F32Mask8, F64Mask4};
 
 // AVX2-native I8x32 / I16x16 live in simd_avx512.rs (256-bit __m256i types).
 // Re-export so consumers see a unified `crate::simd_avx2::I8x32` symbol.
@@ -557,13 +557,11 @@ impl F32x16 {
     }
     #[inline(always)]
     pub fn reduce_min(self) -> f32 {
-        let a = self.to_array();
-        a.iter().copied().fold(f32::INFINITY, f32::min)
+        self.0.reduce_min().min(self.1.reduce_min())
     }
     #[inline(always)]
     pub fn reduce_max(self) -> f32 {
-        let a = self.to_array();
-        a.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+        self.0.reduce_max().max(self.1.reduce_max())
     }
     #[inline(always)]
     pub fn abs(self) -> Self {
@@ -571,32 +569,15 @@ impl F32x16 {
     }
     #[inline(always)]
     pub fn sqrt(self) -> Self {
-        let a = self.to_array();
-        let mut o = [0.0f32; 16];
-        for i in 0..16 {
-            o[i] = a[i].sqrt();
-        }
-        Self::from_array(o)
+        Self(self.0.sqrt(), self.1.sqrt())
     }
     #[inline(always)]
     pub fn round(self) -> Self {
-        let a = self.to_array();
-        let mut o = [0.0f32; 16];
-        for i in 0..16 {
-            // Ties to even, like AVX-512 roundscale and NEON/wasm nearest;
-            // f32::round / f64::round round ties away from zero.
-            o[i] = a[i].round_ties_even();
-        }
-        Self::from_array(o)
+        Self(self.0.round(), self.1.round())
     }
     #[inline(always)]
     pub fn floor(self) -> Self {
-        let a = self.to_array();
-        let mut o = [0.0f32; 16];
-        for i in 0..16 {
-            o[i] = a[i].floor();
-        }
-        Self::from_array(o)
+        Self(self.0.floor(), self.1.floor())
     }
     #[inline(always)]
     /// Fused multiply-add, single rounding: `_mm256_fmadd_ps` on each half
@@ -606,23 +587,11 @@ impl F32x16 {
     }
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut o = [0.0f32; 16];
-        for i in 0..16 {
-            o[i] = a[i].min(b[i]);
-        }
-        Self::from_array(o)
+        Self(self.0.simd_min(other.0), self.1.simd_min(other.1))
     }
     #[inline(always)]
     pub fn simd_max(self, other: Self) -> Self {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut o = [0.0f32; 16];
-        for i in 0..16 {
-            o[i] = a[i].max(b[i]);
-        }
-        Self::from_array(o)
+        Self(self.0.simd_max(other.0), self.1.simd_max(other.1))
     }
     #[inline(always)]
     pub fn simd_clamp(self, lo: Self, hi: Self) -> Self {
@@ -630,27 +599,11 @@ impl F32x16 {
     }
     #[inline(always)]
     pub fn simd_lt(self, other: Self) -> F32Mask16 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u16 = 0;
-        for i in 0..16 {
-            if a[i] < b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F32Mask16(bits)
+        F32Mask16(self.0.simd_lt(other.0), self.1.simd_lt(other.1))
     }
     #[inline(always)]
     pub fn simd_le(self, other: Self) -> F32Mask16 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u16 = 0;
-        for i in 0..16 {
-            if a[i] <= b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F32Mask16(bits)
+        F32Mask16(self.0.simd_le(other.0), self.1.simd_le(other.1))
     }
     #[inline(always)]
     pub fn simd_gt(self, other: Self) -> F32Mask16 {
@@ -662,27 +615,11 @@ impl F32x16 {
     }
     #[inline(always)]
     pub fn simd_eq(self, other: Self) -> F32Mask16 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u16 = 0;
-        for i in 0..16 {
-            if a[i] == b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F32Mask16(bits)
+        F32Mask16(self.0.simd_eq(other.0), self.1.simd_eq(other.1))
     }
     #[inline(always)]
     pub fn simd_ne(self, other: Self) -> F32Mask16 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u16 = 0;
-        for i in 0..16 {
-            if a[i] != b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F32Mask16(bits)
+        F32Mask16(self.0.simd_ne(other.0), self.1.simd_ne(other.1))
     }
     /// Gather 16 f32 values at `base_ptr.offset(indices[i])` — the same
     /// signature and contract as the AVX-512 backend's `_mm512_i32gather_ps`
@@ -815,20 +752,26 @@ impl Default for F32x16 {
     }
 }
 
+/// 16-lane `F32x16` compare result on AVX2: two `F32Mask8` lane masks (one
+/// per 256-bit half), so `select` is two `vblendvps` and `to_bitmask` two
+/// `vmovmskps` — no per-lane loop. (Until plan simd-fruits-integration-v1 F2
+/// this was a `u16` bitmask, the AVX-512 shape, which forced every compare
+/// and select through a scalar loop on this arm.) Read and combine it through
+/// `to_bitmask` / `from_bitmask` / `& | ^ !`; the fields are private.
 #[derive(Copy, Clone, Debug)]
-pub struct F32Mask16(pub u16);
+pub struct F32Mask16(pub(crate) F32Mask8, pub(crate) F32Mask8);
 impl F32Mask16 {
     /// The mask as a packed 16-bit bitmask, LSB-first (bit `i` = lane `i`).
     /// The one representation-independent reading of a compare result: every
-    /// backend stores its mask differently (`__mmask16`, `u16`,
-    /// `core::simd::Mask`), so callers combine and inspect masks through this
-    /// rather than the tuple field (the `aabb` broadphase read `.0` directly
-    /// and did not compile on the portable backend — fixed 2026-09-14).
+    /// backend stores its mask differently (`__mmask16`, two lane-mask
+    /// vectors, `u16`, `core::simd::Mask`), so callers combine and inspect
+    /// masks through this rather than the tuple fields.
     ///
     /// # Examples
     /// Bit `i` is lane `i`: with lanes 0 and 15 below the threshold the
     /// `simd_lt` mask reads `0b1000_0000_0000_0001`.
-    /// ```rust,ignore
+    /// ```
+    /// use ndarray::simd::F32x16;
     /// let mut a = [10.0f32; 16];
     /// a[0] = -1.0;
     /// a[15] = -1.0;
@@ -837,17 +780,38 @@ impl F32Mask16 {
     /// ```
     #[inline(always)]
     pub fn to_bitmask(self) -> u16 {
-        self.0
+        u16::from(self.0.to_bitmask()) | (u16::from(self.1.to_bitmask()) << 8)
     }
+    /// Lane `i` is set iff bit `i` of `bits` is set.
+    ///
+    /// ```
+    /// use ndarray::simd::F32Mask16;
+    /// let m = F32Mask16::from_bitmask(0x8001);
+    /// assert_eq!(m.to_bitmask(), 0x8001);
+    /// ```
+    #[inline(always)]
+    pub fn from_bitmask(bits: u16) -> Self {
+        Self(F32Mask8::from_bitmask(bits as u8), F32Mask8::from_bitmask((bits >> 8) as u8))
+    }
+    /// Lane-wise `if mask { true_val } else { false_val }` (two `vblendvps`).
     #[inline(always)]
     pub fn select(self, true_val: F32x16, false_val: F32x16) -> F32x16 {
-        let t = true_val.to_array();
-        let f = false_val.to_array();
-        let mut o = [0.0f32; 16];
-        for i in 0..16 {
-            o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] };
-        }
-        F32x16::from_array(o)
+        F32x16(self.0.select(true_val.0, false_val.0), self.1.select(true_val.1, false_val.1))
+    }
+    /// `true` if at least one lane is set.
+    #[inline(always)]
+    pub fn any(self) -> bool {
+        self.to_bitmask() != 0
+    }
+    /// `true` if every lane is set.
+    #[inline(always)]
+    pub fn all(self) -> bool {
+        self.to_bitmask() == u16::MAX
+    }
+    /// `true` if no lane is set.
+    #[inline(always)]
+    pub fn none(self) -> bool {
+        self.to_bitmask() == 0
     }
 }
 
@@ -890,51 +854,27 @@ impl F64x8 {
     }
     #[inline(always)]
     pub fn reduce_min(self) -> f64 {
-        let a = self.to_array();
-        a.iter().copied().fold(f64::INFINITY, f64::min)
+        self.0.reduce_min().min(self.1.reduce_min())
     }
     #[inline(always)]
     pub fn reduce_max(self) -> f64 {
-        let a = self.to_array();
-        a.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        self.0.reduce_max().max(self.1.reduce_max())
     }
     #[inline(always)]
     pub fn abs(self) -> Self {
-        let a = self.to_array();
-        let mut o = [0.0f64; 8];
-        for i in 0..8 {
-            o[i] = a[i].abs();
-        }
-        Self::from_array(o)
+        Self(self.0.abs(), self.1.abs())
     }
     #[inline(always)]
     pub fn sqrt(self) -> Self {
-        let a = self.to_array();
-        let mut o = [0.0f64; 8];
-        for i in 0..8 {
-            o[i] = a[i].sqrt();
-        }
-        Self::from_array(o)
+        Self(self.0.sqrt(), self.1.sqrt())
     }
     #[inline(always)]
     pub fn round(self) -> Self {
-        let a = self.to_array();
-        let mut o = [0.0f64; 8];
-        for i in 0..8 {
-            // Ties to even, like AVX-512 roundscale and NEON/wasm nearest;
-            // f32::round / f64::round round ties away from zero.
-            o[i] = a[i].round_ties_even();
-        }
-        Self::from_array(o)
+        Self(self.0.round(), self.1.round())
     }
     #[inline(always)]
     pub fn floor(self) -> Self {
-        let a = self.to_array();
-        let mut o = [0.0f64; 8];
-        for i in 0..8 {
-            o[i] = a[i].floor();
-        }
-        Self::from_array(o)
+        Self(self.0.floor(), self.1.floor())
     }
     #[inline(always)]
     /// Fused multiply-add, single rounding: `_mm256_fmadd_pd` on each half
@@ -944,23 +884,11 @@ impl F64x8 {
     }
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut o = [0.0f64; 8];
-        for i in 0..8 {
-            o[i] = a[i].min(b[i]);
-        }
-        Self::from_array(o)
+        Self(self.0.simd_min(other.0), self.1.simd_min(other.1))
     }
     #[inline(always)]
     pub fn simd_max(self, other: Self) -> Self {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut o = [0.0f64; 8];
-        for i in 0..8 {
-            o[i] = a[i].max(b[i]);
-        }
-        Self::from_array(o)
+        Self(self.0.simd_max(other.0), self.1.simd_max(other.1))
     }
     #[inline(always)]
     pub fn simd_clamp(self, lo: Self, hi: Self) -> Self {
@@ -968,79 +896,31 @@ impl F64x8 {
     }
     #[inline(always)]
     pub fn simd_ge(self, other: Self) -> F64Mask8 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u8 = 0;
-        for i in 0..8 {
-            if a[i] >= b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F64Mask8(bits)
+        F64Mask8(self.0.simd_ge(other.0), self.1.simd_ge(other.1))
     }
     #[inline(always)]
     pub fn simd_le(self, other: Self) -> F64Mask8 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u8 = 0;
-        for i in 0..8 {
-            if a[i] <= b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F64Mask8(bits)
+        F64Mask8(self.0.simd_le(other.0), self.1.simd_le(other.1))
     }
     /// Lane-wise `==` — ordered: false if either lane is NaN; `+0.0 == -0.0` (AVX-512 `_CMP_EQ_OQ`).
     #[inline(always)]
     pub fn simd_eq(self, other: Self) -> F64Mask8 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u8 = 0;
-        for i in 0..8 {
-            if a[i] == b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F64Mask8(bits)
+        F64Mask8(self.0.simd_eq(other.0), self.1.simd_eq(other.1))
     }
     /// Lane-wise `!=` — unordered: true if either lane is NaN (AVX-512 `_CMP_NEQ_UQ`).
     #[inline(always)]
     pub fn simd_ne(self, other: Self) -> F64Mask8 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u8 = 0;
-        for i in 0..8 {
-            if a[i] != b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F64Mask8(bits)
+        F64Mask8(self.0.simd_ne(other.0), self.1.simd_ne(other.1))
     }
     /// Lane-wise `<` — ordered: false if either lane is NaN (AVX-512 `_CMP_LT_OS`).
     #[inline(always)]
     pub fn simd_lt(self, other: Self) -> F64Mask8 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u8 = 0;
-        for i in 0..8 {
-            if a[i] < b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F64Mask8(bits)
+        F64Mask8(self.0.simd_lt(other.0), self.1.simd_lt(other.1))
     }
     /// Lane-wise `>` — ordered: false if either lane is NaN (AVX-512 `other.simd_lt(self)`).
     #[inline(always)]
     pub fn simd_gt(self, other: Self) -> F64Mask8 {
-        let a = self.to_array();
-        let b = other.to_array();
-        let mut bits: u8 = 0;
-        for i in 0..8 {
-            if a[i] > b[i] {
-                bits |= 1 << i;
-            }
-        }
-        F64Mask8(bits)
+        F64Mask8(self.0.simd_gt(other.0), self.1.simd_gt(other.1))
     }
     #[inline(always)]
     pub fn to_bits(self) -> U64x8 {
@@ -1141,23 +1021,52 @@ impl Default for F64x8 {
     }
 }
 
+/// 8-lane `F64x8` compare result on AVX2: two `F64Mask4` lane masks (one per
+/// 256-bit half). Same design and API as `F32Mask16` above; the fields are
+/// private.
 #[derive(Copy, Clone, Debug)]
-pub struct F64Mask8(pub u8);
+pub struct F64Mask8(pub(crate) F64Mask4, pub(crate) F64Mask4);
 impl F64Mask8 {
     /// Lane `i` of the comparison is bit `i` of the result.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let m = F64x8::from_array([0.0, 2.0, 0.0, 2.0, 0.0, 2.0, 0.0, 2.0]).simd_lt(F64x8::splat(1.0));
+    /// assert_eq!(m.to_bitmask(), 0b0101_0101);
+    /// ```
     #[inline(always)]
     pub fn to_bitmask(self) -> u8 {
-        self.0
+        self.0.to_bitmask() | (self.1.to_bitmask() << 4)
     }
+    /// Lane `i` is set iff bit `i` of `bits` is set.
+    ///
+    /// ```
+    /// use ndarray::simd::F64Mask8;
+    /// assert_eq!(F64Mask8::from_bitmask(0x81).to_bitmask(), 0x81);
+    /// ```
+    #[inline(always)]
+    pub fn from_bitmask(bits: u8) -> Self {
+        Self(F64Mask4::from_bitmask(bits & 0xF), F64Mask4::from_bitmask(bits >> 4))
+    }
+    /// Lane-wise `if mask { true_val } else { false_val }` (two `vblendvpd`).
     #[inline(always)]
     pub fn select(self, true_val: F64x8, false_val: F64x8) -> F64x8 {
-        let t = true_val.to_array();
-        let f = false_val.to_array();
-        let mut o = [0.0f64; 8];
-        for i in 0..8 {
-            o[i] = if (self.0 >> i) & 1 == 1 { t[i] } else { f[i] };
-        }
-        F64x8::from_array(o)
+        F64x8(self.0.select(true_val.0, false_val.0), self.1.select(true_val.1, false_val.1))
+    }
+    /// `true` if at least one lane is set.
+    #[inline(always)]
+    pub fn any(self) -> bool {
+        self.to_bitmask() != 0
+    }
+    /// `true` if every lane is set.
+    #[inline(always)]
+    pub fn all(self) -> bool {
+        self.to_bitmask() == u8::MAX
+    }
+    /// `true` if no lane is set.
+    #[inline(always)]
+    pub fn none(self) -> bool {
+        self.to_bitmask() == 0
     }
 }
 
@@ -5070,3 +4979,39 @@ fn ternlog_two_input_u32x16(t: u8, a: U32x16, b: U32x16) -> U32x16 {
     }
 }
 // GEN-TERNLOG-END
+
+// Lane-wise logic on the AVX2 512-bit mask pairs: one op per half.
+macro_rules! impl_mask_pair_logic {
+    ($mask:ident) => {
+        impl BitAnd for $mask {
+            type Output = Self;
+            #[inline(always)]
+            fn bitand(self, rhs: Self) -> Self {
+                Self(self.0 & rhs.0, self.1 & rhs.1)
+            }
+        }
+        impl BitOr for $mask {
+            type Output = Self;
+            #[inline(always)]
+            fn bitor(self, rhs: Self) -> Self {
+                Self(self.0 | rhs.0, self.1 | rhs.1)
+            }
+        }
+        impl BitXor for $mask {
+            type Output = Self;
+            #[inline(always)]
+            fn bitxor(self, rhs: Self) -> Self {
+                Self(self.0 ^ rhs.0, self.1 ^ rhs.1)
+            }
+        }
+        impl Not for $mask {
+            type Output = Self;
+            #[inline(always)]
+            fn not(self) -> Self {
+                Self(!self.0, !self.1)
+            }
+        }
+    };
+}
+impl_mask_pair_logic!(F32Mask16);
+impl_mask_pair_logic!(F64Mask8);

@@ -822,6 +822,7 @@ pub mod aarch64_simd {
 
     #[derive(Copy, Clone, Debug)]
     pub struct F32Mask16(pub u16);
+    impl_bitmask_mask_api!(F32Mask16, u16, 16, F32x16);
     impl F32Mask16 {
         /// The mask as a packed 16-bit bitmask, LSB-first (bit `i` = lane `i`).
         /// The one representation-independent reading of a compare result: every
@@ -1199,6 +1200,7 @@ pub mod aarch64_simd {
 
     #[derive(Copy, Clone, Debug)]
     pub struct F64Mask8(pub u8);
+    impl_bitmask_mask_api!(F64Mask8, u8, 8, F64x8);
     impl F64Mask8 {
         /// Lane `i` of the comparison is bit `i` of the result.
         #[inline(always)]
