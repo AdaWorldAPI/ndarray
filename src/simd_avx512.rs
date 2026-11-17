@@ -317,19 +317,6 @@ impl F32x16 {
     pub fn recip(self) -> Self {
         F32x16::splat(1.0) / self
     }
-
-    /// Approximate reciprocal `1 / self`. `_mm512_rcp14_ps`: relative error <= 2^-14.
-    ///
-    /// ```
-    /// use ndarray::simd::F32x16;
-    /// let r = F32x16::splat(4.0).recip_approx().to_array();
-    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 0.001));
-    /// ```
-    #[inline(always)]
-    pub fn recip_approx(self) -> Self {
-        // SAFETY: AVX-512F register-only op (vrcp14ps).
-        Self(unsafe { _mm512_rcp14_ps(self.0) })
-    }
 }
 
 impl_bin_op!(F32x16, Add, add, _mm512_add_ps);
@@ -624,19 +611,6 @@ impl F64x8 {
     #[inline(always)]
     pub fn recip(self) -> Self {
         F64x8::splat(1.0) / self
-    }
-
-    /// Approximate reciprocal `1 / self`. `_mm512_rcp14_pd`: relative error <= 2^-14.
-    ///
-    /// ```
-    /// use ndarray::simd::F64x8;
-    /// let r = F64x8::splat(4.0).recip_approx().to_array();
-    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 0.001));
-    /// ```
-    #[inline(always)]
-    pub fn recip_approx(self) -> Self {
-        // SAFETY: AVX-512F register-only op (vrcp14pd).
-        Self(unsafe { _mm512_rcp14_pd(self.0) })
     }
 }
 
@@ -3545,28 +3519,6 @@ impl F32x8 {
     pub fn recip(self) -> Self {
         F32x8::splat(1.0) / self
     }
-
-    /// Approximate reciprocal `1 / self`. With `avx512vl` enabled: `_mm256_rcp14_ps`, relative error <= 2^-14.
-    /// Otherwise: `_mm256_rcp_ps`, relative error <= 1.5 * 2^-12.
-    ///
-    /// ```
-    /// use ndarray::simd::F32x8;
-    /// let r = F32x8::splat(4.0).recip_approx().to_array();
-    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 0.001));
-    /// ```
-    #[inline(always)]
-    pub fn recip_approx(self) -> Self {
-        #[cfg(target_feature = "avx512vl")]
-        {
-            // SAFETY: avx512vl is enabled at compile time (vrcp14ps ymm).
-            Self(unsafe { _mm256_rcp14_ps(self.0) })
-        }
-        #[cfg(not(target_feature = "avx512vl"))]
-        {
-            // SAFETY: AVX register-only op (vrcpps).
-            Self(unsafe { _mm256_rcp_ps(self.0) })
-        }
-    }
 }
 
 impl Add for F32x8 {
@@ -4032,27 +3984,6 @@ impl F64x4 {
     #[inline(always)]
     pub fn recip(self) -> Self {
         F64x4::splat(1.0) / self
-    }
-
-    /// Approximate reciprocal `1 / self`. With `avx512vl` enabled: `_mm256_rcp14_pd`, relative error <= 2^-14.
-    /// Otherwise AVX has no f64 reciprocal estimate, so this is the exact `recip()`.
-    ///
-    /// ```
-    /// use ndarray::simd::F64x4;
-    /// let r = F64x4::splat(4.0).recip_approx().to_array();
-    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 0.001));
-    /// ```
-    #[inline(always)]
-    pub fn recip_approx(self) -> Self {
-        #[cfg(target_feature = "avx512vl")]
-        {
-            // SAFETY: avx512vl is enabled at compile time (vrcp14pd ymm).
-            Self(unsafe { _mm256_rcp14_pd(self.0) })
-        }
-        #[cfg(not(target_feature = "avx512vl"))]
-        {
-            self.recip()
-        }
     }
 }
 

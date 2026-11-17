@@ -1,3 +1,13 @@
+## 2026-11-17 — RULE (operator): every facade method is IEEE bit-exact, identical on every CPU; no round trips
+
+"Every method MUST be ieee bit exact. Any round trip must be prevented by all means. Mantissa bit must be
+preserved." Applied: `recip_approx` removed from all arms (it returned arm-dependent bits). Audit of the
+rest of this branch's additions: compares/masks, copysign, recip, sqrt, round, floor, mul_add (FMA3, or the
+exact scalar FMA on AVX-without-FMA), mul_widen_even/mul_high (integer exact), load/store_partial (bit
+copies) — all bit-exact and arm-identical by the parity tests. Pre-existing (master, untouched): AVX-512
+F32x16/F64x8 simd_min/max use raw vminps (NaN → second operand) while AVX2/scalar use f32::min; nightly
+reduce_* all-NaN → NaN. Plan F12 (fast/exact split) rejected.
+
 ## 2026-11-17 — CORRECTION: simd-fruits breaking changes reverted (operator: "absolutely unacceptable")
 
 Two breaks had shipped on PR #435 and are removed:

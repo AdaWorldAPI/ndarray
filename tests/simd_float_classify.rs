@@ -1,13 +1,12 @@
 //! Parity for plan `simd-fruits-integration-v1` F5: `is_nan`, `is_finite`,
-//! `is_infinite`, `copysign`, `recip` and `recip_approx` on `F32x16`,
+//! `is_infinite`, `copysign` and `recip` on `F32x16`,
 //! `F64x8`, `F32x8` and `F64x4`.
 //!
 //! Expectations are computed lane by lane with the `f32`/`f64` methods of
 //! the same name, so this file grades whichever arm the build compiled.
-//! `copysign` and `recip` must be bit-exact; `recip_approx` must be within
-//! a relative error of 2^-11 on normal inputs whose reciprocal is normal
-//! (the documented contract; AVX-512 `vrcp14` is 2^-14, AVX `vrcpps`
-//! 1.5·2^-12, the other arms are exact).
+//! Every result must be IEEE bit-exact and identical on every arm (the
+//! polyfill contract): the masks bit for bit, `copysign` and `recip` by
+//! `to_bits`.
 #![cfg(feature = "std")]
 
 use ndarray::simd::{F32x16, F32x8, F64x4, F64x8};
@@ -85,7 +84,6 @@ macro_rules! classify_parity {
             );
             let cs = va.copysign(vs).to_array();
             let rc = va.recip().to_array();
-            let ra = va.recip_approx().to_array();
             for i in 0..$lanes {
                 assert_eq!(
                     cs[i].to_bits(),
@@ -102,17 +100,6 @@ macro_rules! classify_parity {
                     rc[i],
                     want
                 );
-                if a[i].is_normal() && want.is_normal() {
-                    let rel = ((ra[i] - want) / want).abs();
-                    assert!(
-                        rel <= 1.0 / 2048.0,
-                        "{t}::recip_approx lane {i}: 1/{:?} got {:?} want {:?} rel {:e}",
-                        a[i],
-                        ra[i],
-                        want,
-                        rel
-                    );
-                }
             }
         }
     };
@@ -124,35 +111,4 @@ fn classification_copysign_recip_match_scalar() {
     classify_parity!(F64x8, f64, 8, lanes_f64);
     classify_parity!(F32x8, f32, 8, lanes_f32);
     classify_parity!(F64x4, f64, 4, lanes_f64);
-}
-
-#[test]
-fn recip_approx_dense_sweep_f32() {
-    // 4,096 normal f32 values spread over many binades and both signs.
-    let mut worst = 0.0f64;
-    for k in 0..256u32 {
-        let base: [f32; 16] = core::array::from_fn(|i| {
-            let e = (k % 60) as i32 - 30;
-            let m = 1.0 + (i as f32 + 16.0 * (k / 60) as f32) / 128.0;
-            let x = m * 2f32.powi(e);
-            if (k + i as u32).is_multiple_of(2) {
-                x
-            } else {
-                -x
-            }
-        });
-        let got = F32x16::from_array(base).recip_approx().to_array();
-        let got8 = F32x8::from_array(base[..8].try_into().unwrap())
-            .recip_approx()
-            .to_array();
-        for i in 0..16 {
-            let want = 1.0 / f64::from(base[i]);
-            worst = worst.max(((f64::from(got[i]) - want) / want).abs());
-            if i < 8 {
-                worst = worst.max(((f64::from(got8[i]) - want) / want).abs());
-            }
-        }
-    }
-    assert!(worst <= 1.0 / 2048.0, "recip_approx worst relative error {worst:e} > 2^-11");
-    println!("recip_approx f32 worst relative error: {worst:e}");
 }

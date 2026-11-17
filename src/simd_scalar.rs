@@ -205,11 +205,6 @@ macro_rules! impl_float_type {
                 Self(core::array::from_fn(|i| 1.0 / self.0[i]))
             }
 
-            #[doc = concat!("Approximate `1/self`. Exact on the scalar arm (relative error 0, the same as `recip`).\n\n```\nuse ndarray::simd::", stringify!($name), ";\nlet r = ", stringify!($name), "::splat(4.0).recip_approx();\nassert_eq!(r.to_array(), [0.25; ", stringify!($lanes), "]);\n```")]
-            #[inline(always)]
-            pub fn recip_approx(self) -> Self {
-                self.recip()
-            }
 
             #[inline(always)]
             pub fn simd_lt(self, other: Self) -> $mask {

@@ -474,11 +474,6 @@ impl F32x16 {
     pub fn recip(self) -> Self {
         Self(self.0.recip())
     }
-    /// Approximate `1/self`; exact on the portable backend.
-    #[inline(always)]
-    pub fn recip_approx(self) -> Self {
-        self.recip()
-    }
 }
 
 // F5 (plan simd-fruits-integration-v1): classification, copysign, reciprocal.
@@ -507,10 +502,5 @@ impl F32x8 {
     #[inline(always)]
     pub fn recip(self) -> Self {
         Self(self.0.recip())
-    }
-    /// Approximate `1/self`; exact on the portable backend.
-    #[inline(always)]
-    pub fn recip_approx(self) -> Self {
-        self.recip()
     }
 }

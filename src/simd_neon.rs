@@ -799,17 +799,6 @@ pub mod aarch64_simd {
         pub fn recip(self) -> Self {
             Self::splat(1.0) / self
         }
-
-        /// Approximate reciprocal; exact on NEON (no estimate is used; `vrecpe` alone is ~8 bits).
-        ///
-        /// ```
-        /// use ndarray::simd::F32x16;
-        /// assert_eq!(F32x16::splat(4.0).recip_approx().to_array(), [0.25f32; 16]);
-        /// ```
-        #[inline(always)]
-        pub fn recip_approx(self) -> Self {
-            self.recip()
-        }
     }
 
     impl Add for F32x16 {
@@ -1271,17 +1260,6 @@ pub mod aarch64_simd {
         #[inline(always)]
         pub fn recip(self) -> Self {
             Self::splat(1.0) / self
-        }
-
-        /// Approximate reciprocal; exact on NEON (no estimate is used; `vrecpe` alone is ~8 bits).
-        ///
-        /// ```
-        /// use ndarray::simd::F64x8;
-        /// assert_eq!(F64x8::splat(4.0).recip_approx().to_array(), [0.25f64; 8]);
-        /// ```
-        #[inline(always)]
-        pub fn recip_approx(self) -> Self {
-            self.recip()
         }
     }
 

@@ -390,18 +390,6 @@ pub mod wasm32_simd {
         pub fn recip(self) -> Self {
             Self::splat(1.0) / self
         }
-
-        /// Reciprocal "approximation": exact on wasm (simd128 has no reciprocal
-        /// estimate), i.e. identical to [`Self::recip`].
-        ///
-        /// ```
-        /// use ndarray::simd::F32x16;
-        /// assert_eq!(F32x16::splat(4.0).recip_approx().to_array(), [0.25; 16]);
-        /// ```
-        #[inline(always)]
-        pub fn recip_approx(self) -> Self {
-            self.recip()
-        }
     }
 
     impl Add for F32x16 {
@@ -837,18 +825,6 @@ pub mod wasm32_simd {
         #[inline(always)]
         pub fn recip(self) -> Self {
             Self::splat(1.0) / self
-        }
-
-        /// Reciprocal "approximation": exact on wasm (simd128 has no reciprocal
-        /// estimate), i.e. identical to [`Self::recip`].
-        ///
-        /// ```
-        /// use ndarray::simd::F64x8;
-        /// assert_eq!(F64x8::splat(4.0).recip_approx().to_array(), [0.25; 8]);
-        /// ```
-        #[inline(always)]
-        pub fn recip_approx(self) -> Self {
-            self.recip()
         }
     }
 

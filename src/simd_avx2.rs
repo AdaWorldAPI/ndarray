@@ -733,18 +733,6 @@ impl F32x16 {
     pub fn recip(self) -> Self {
         Self(self.0.recip(), self.1.recip())
     }
-    /// Approximation of `1/self`. On AVX2 this is the 256-bit half's bound:
-    /// ≤ 1.5·2^-12 relative error for f32 (`vrcpps`), exact for f64.
-    ///
-    /// ```
-    /// use ndarray::simd::F32x16;
-    /// let r = F32x16::splat(4.0).recip_approx().to_array();
-    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 2f32.powi(-11)));
-    /// ```
-    #[inline(always)]
-    pub fn recip_approx(self) -> Self {
-        Self(self.0.recip_approx(), self.1.recip_approx())
-    }
 }
 
 impl Add for F32x16 {
@@ -1042,18 +1030,6 @@ impl F64x8 {
     #[inline(always)]
     pub fn recip(self) -> Self {
         Self(self.0.recip(), self.1.recip())
-    }
-    /// Approximation of `1/self`. On AVX2 this is the 256-bit half's bound:
-    /// ≤ 1.5·2^-12 relative error for f32 (`vrcpps`), exact for f64.
-    ///
-    /// ```
-    /// use ndarray::simd::F64x8;
-    /// let r = F64x8::splat(4.0).recip_approx().to_array();
-    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 2f64.powi(-11)));
-    /// ```
-    #[inline(always)]
-    pub fn recip_approx(self) -> Self {
-        Self(self.0.recip_approx(), self.1.recip_approx())
     }
 }
 

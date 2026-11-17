@@ -94,9 +94,11 @@ Today `F32x8` has `splat/from_slice/from_array/to_array/copy_to_slice/reduce_sum
 `recip`, `recip_sqrt`.
 - AVX-512: `copysign` is one `vpternlogq` bit-select with a sign-bit mask operand. The immediate depends on operand order; derive it from the truth table and pin it in a test.
 - AVX2: `copysign` is an `and`/`andnot`/`or` sequence.
-- Semantics: there are two flavours of reciprocal. `recip_approx` uses `vrcp14p[sd]`
-  (AVX-512, 2⁻¹⁴ relative error) or `vrcpps` (AVX2, f32 only, 1.5·2⁻¹²). `recip` is exact
-  (`1/x`, i.e. `vdivp[sd]`). Both precisions are written in the doc comments.
+- ⊘ **REMOVED 2026-11-17 (operator: "Every method MUST be ieee bit exact").** `recip_approx`
+  (vrcp14 / vrcpps / exact by arm) returned different bits on different CPUs (1/3.0:
+  `3eaaaa80` v4, `3eaaa000` v3, `3eaaaaab` scalar) — an estimate has no place in the facade.
+  Only `recip` (exact IEEE `1/x`, identical on every arm) remains. The wide/pulp "fast vs exact"
+  split (F12) is rejected for the same reason.
 - Witness: parity tests over NaN, ±Inf, ±0 and denormals; scalar is the reference.
 
 **F6. Widening multiply and high-half multiply.** *(TD9; from wide `widening_mul`, `mul_keep_high`)*
