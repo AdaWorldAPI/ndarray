@@ -1,3 +1,10 @@
+## 2026-11-17 — RESULT: Mandelbrot AVX-512 gap closed without a library change
+
+Inner loops of ndarray and wide8 are instruction-identical on v4 (llvm-objdump). The 9% gap was the bench
+arm's per-lane saturating `f64 as u32` (≈40 scalar insns per block). Replaced by exact `(count + 2^52)
+.to_bits()` + `as_chunks_mut::<8>()` — existing facade methods only. v4, 1 thread: ndarray 149–154 ms vs
+wide8 152–157, pulp 155–156 (was 168–175). v3 still behind (bitmask pack/expand around select, unchanged).
+
 ## 2026-11-17 — FIXED: AVX2 F64x8::reduce_min/max regression (restore master's array fold)
 
 Operator hint: the simd_ops shapes (add_mul, as_chunks) are the way. Master's reduce body was already that

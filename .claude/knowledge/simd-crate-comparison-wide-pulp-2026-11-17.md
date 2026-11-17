@@ -352,3 +352,27 @@ over a fixed array is not an R2 lane loop). Rule taken from it: express an op as
 expression (`as_chunks`, `array_chunks`, the closure-parameterized `simd_ops` helpers, the typed vectors'
 own methods) and let the compiler lower it; reach for intrinsics only where the disassembly shows it did
 not vectorize (`U8x64::mask_blend`, `F32x16` compare+select, `F32x16` reductions).
+
+## 8. Mandelbrot follow-up: the AVX-512 gap was in the benchmark arm, not in ndarray (2026-11-17)
+
+llvm-objdump of the hot closure on x86-64-v4: the ndarray and wide8 inner iteration loops are identical,
+instruction for instruction (28 instructions; only the compare predicate differs, `vcmplepd` vs
+`vcmple_oqpd`). The 9% gap of § 6 was around the loop, in code I wrote for the arm:
+- the per-block count conversion was a saturating `f64 as u32` per lane — about 40 scalar instructions
+  (8× `vmaxsd`/`vminsd`/`vcvttsd2si` + inserts) against wide's 7 (`vcvtpd2qq` + `vpmovqd`). Writing it as a
+  fixed-size-array expression did not make LLVM vectorize the saturating cast.
+- (a zero-filled output vector, where the other arms write into uninitialized capacity — fixed too; no
+  measurable effect on its own.)
+
+Fix, with existing facade methods only: `(count + F64x8::splat(2^52)).to_bits()` — exact for the small
+integer counts, one vector add and a reinterpretation — and `as_chunks_mut::<8>()` for the row.
+Measured, 1 thread, median of 15, three runs, mandelbrot-simd `HEAD`:
+
+| build | wide8 | pulp | ndarray before the fix | ndarray after |
+|---|---|---|---|---|
+| x86-64-v4 | 152–157 | 155–156 | 168–175 | **149–154** |
+| x86-64-v3 | 153–158 | 154–156 | 186–198 | 168–194 (noisy) |
+
+On AVX-512 ndarray is level with wide and pulp. On AVX2 it stays behind: the compare result is packed to
+the public bitmask and expanded again for `select` (§ 6), which is unchanged. § 6's "v4 ≈ 9% behind … not
+measured in isolation" is hereby measured: it was the conversion.
