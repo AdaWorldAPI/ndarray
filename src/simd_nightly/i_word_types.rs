@@ -985,3 +985,13 @@ impl PartialEq for I64x4 {
         self.to_array() == other.to_array()
     }
 }
+
+// F6 (plan simd-fruits-integration-v1): high-half multiply.
+impl I16x32 {
+    /// High 16 bits of the 32-bit signed product, per lane (arithmetic shift).
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        let p = self.0.cast::<i32>() * rhs.0.cast::<i32>();
+        Self((p >> core::simd::Simd::splat(16)).cast::<i16>())
+    }
+}

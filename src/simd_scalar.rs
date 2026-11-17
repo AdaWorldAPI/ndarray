@@ -615,6 +615,38 @@ impl_int_type!(U16x32, u16, 32, 0u16);
 impl_int_type!(U32x16, u32, 16, 0u32);
 impl_int_type!(U64x8, u64, 8, 0u64);
 
+impl U32x16 {
+    /// Full 64-bit product of the even `u32` lanes: lane `k` (0..8) is
+    /// `self[2k] * rhs[2k]` widened to `u64`. Odd lanes are ignored. Exact.
+    /// Mirrors `pmuludq` (`_mm*_mul_epu32`).
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(u32::MAX);
+    /// let w = a.mul_widen_even(a).to_array();
+    /// assert_eq!(w, [u64::from(u32::MAX) * u64::from(u32::MAX); 8]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_widen_even(self, rhs: Self) -> U64x8 {
+        U64x8(core::array::from_fn(|k| u64::from(self.0[2 * k]) * u64::from(rhs.0[2 * k])))
+    }
+}
+
+impl U16x32 {
+    /// High 16 bits of the unsigned 32-bit product, per lane:
+    /// `((a * b) >> 16) as u16`. Mirrors `pmulhuw` (`_mm*_mulhi_epu16`).
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let r = U16x32::splat(0x8000).mul_high(U16x32::splat(4)).to_array();
+    /// assert_eq!(r, [2u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        Self(core::array::from_fn(|i| ((u32::from(self.0[i]) * u32::from(rhs.0[i])) >> 16) as u16))
+    }
+}
+
 impl U64x8 {
     /// Lane `j` gains the sum of the bytes `a[i]`, `i` in `8j..8j+8`, whose bit
     /// in `keep` is set: `vpsadbw` against zero on the kept bytes, accumulated
@@ -730,6 +762,22 @@ impl U64x8 {
 impl_int_type!(I8x64, i8, 64, 0i8);
 impl_int_type!(I8x32, i8, 32, 0i8);
 impl_int_type!(I16x32, i16, 32, 0i16);
+
+impl I16x32 {
+    /// High 16 bits of the signed 32-bit product, per lane:
+    /// `((a * b) >> 16) as i16` (arithmetic shift). Mirrors `pmulhw`
+    /// (`_mm*_mulhi_epi16`).
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let r = I16x32::splat(-32768).mul_high(I16x32::splat(2)).to_array();
+    /// assert_eq!(r, [-1i16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        Self(core::array::from_fn(|i| ((i32::from(self.0[i]) * i32::from(rhs.0[i])) >> 16) as i16))
+    }
+}
 impl_int_type!(I16x16, i16, 16, 0i16);
 
 // 256-bit int lanes — scalar polyfills filling the gap surfaced by the

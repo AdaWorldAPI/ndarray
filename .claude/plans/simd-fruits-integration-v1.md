@@ -96,6 +96,10 @@ Today `F32x8` has `splat/from_slice/from_array/to_array/copy_to_slice/reduce_sum
 - `U64x8::mul52_lo`/`mul52_hi`: `vpmadd52luq`/`vpmadd52huq`. AVX-512IFMA only, which
   the host has. Gated by `cfg(target_feature = "avx512ifma")`; AVX2 and scalar use an
   exact u128 path.
+  ⊘ **Deferred 2026-11-17 (landing of F6):** `mul52_*` is not built. A non-IFMA
+  realization is a per-lane u128 loop, which R2 forbids outside `simd_scalar.rs`,
+  and an IFMA-only method would break the W1a "same API on every arm" rule. Revisit
+  with a consumer that needs 52-bit limbs.
 - Witness: parity test against u128 scalar products; codegen-witness.
 
 **F7. AVX2 integer burn-down, done in order of measured cost.** *(TD4; already on the burn-down list)*

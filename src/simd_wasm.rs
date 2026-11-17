@@ -1679,6 +1679,34 @@ pub mod wasm32_simd {
         }
     }
 
+    impl U32x16 {
+        /// Full 64-bit product of the EVEN u32 lanes: lane `k` (0..8) of the
+        /// result is `(self[2k] as u64) * (rhs[2k] as u64)`; odd lanes are
+        /// ignored. Exact, never wraps (`(2^32 - 1)^2 < 2^64`).
+        ///
+        /// Per `v128`: the high 32 bits of each u64 are cleared (leaving the even
+        /// u32 lane zero-extended), then one `i64x2.mul` — both factors are
+        /// below 2^32, so the wrapping 64-bit product is the exact u64 product.
+        ///
+        /// # Examples
+        ///
+        /// ```
+        /// use ndarray::simd::U32x16;
+        /// let a = U32x16::splat(u32::MAX);
+        /// let w = a.mul_widen_even(a).to_array();
+        /// assert_eq!(w, [u64::from(u32::MAX) * u64::from(u32::MAX); 8]);
+        /// ```
+        #[inline(always)]
+        pub fn mul_widen_even(self, rhs: Self) -> U64x8 {
+            let low32 = u64x2_splat(0xFFFF_FFFF);
+            U64x8(core::array::from_fn(|k| {
+                let a = v128_and(self.0[k].0, low32);
+                let b = v128_and(rhs.0[k].0, low32);
+                U64x2(i64x2_mul(a, b))
+            }))
+        }
+    }
+
     impl Add for U32x16 {
         type Output = Self;
         #[inline(always)]

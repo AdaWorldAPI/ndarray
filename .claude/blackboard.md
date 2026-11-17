@@ -1,3 +1,12 @@
+## 2026-11-17 — LANDED: simd-fruits F6 (widening / high-half multiply)
+
+`U32x16::mul_widen_even -> U64x8` (vpmuludq; AVX2 2×256 / AVX 4×128 SSE2; NEON vmovn+vmull;
+wasm and-mask + i64x2_mul; nightly transmute+mask), `U16x32::mul_high` / `I16x32::mul_high`
+(vpmulhuw/vpmulhw; NEON I16x32 vmull+vshrn written by orchestrator). tests/simd_widen_mul.rs
+3/3 on v4, v3, avx, v2, aarch64-qemu, nightly; disable (AVX2 epu16→epi16) red. IFMA mul52 deferred
+(plan note). Sonnet card: 5 runs, 0 code defects; 1 brief defect (mine): NEON I16x32 is a NEON
+polyfill, not scalar — orchestrator added it.
+
 ## 2026-11-17 — LANDED: simd-fruits F1+F2+F3 and F5 (branch claude/practical-newton-u8lir8, PR #435)
 
 - F1+F2+F3 (orchestrator-written): full F32x8/F64x4 API with F32Mask8/F64Mask4 lane masks on every

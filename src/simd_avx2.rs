@@ -1385,6 +1385,62 @@ avx2_int_type!(U8x64, u8, 64, 0u8);
 avx2_int_type!(I8x64, i8, 64, 0i8);
 avx2_int_type!(I16x32, i16, 32, 0i16);
 
+impl I16x32 {
+    /// High half of the lane-wise widened product: lane `i` =
+    /// `(self[i] as i32 * rhs[i] as i32) >> 16`, as `i16`.
+    ///
+    /// Realized with `pmulh*` (`_mm256_mulhi_epi16` per 256-bit half on AVX2,
+    /// `_mm_mulhi_epi16` per 128-bit quarter on the AVX-without-AVX2 arm).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let r = I16x32::splat(-32768).mul_high(I16x32::splat(2)).to_array();
+    /// assert_eq!(r, [-1; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        let mut o = [0 as i16; 32];
+        #[cfg(target_feature = "avx2")]
+        {
+            // SAFETY: AVX2 is enabled at compile time on this arm; `self.0`, `rhs.0` and `o`
+            // are 32-element i16 arrays (64 bytes), so the two 32-byte unaligned
+            // loads/stores at register offsets 0 and 1 stay in bounds; loadu/storeu need no alignment.
+            unsafe {
+                let a = self.0.as_ptr().cast::<core::arch::x86_64::__m256i>();
+                let b = rhs.0.as_ptr().cast::<core::arch::x86_64::__m256i>();
+                let p = o.as_mut_ptr().cast::<core::arch::x86_64::__m256i>();
+                for k in 0..2 {
+                    let r = core::arch::x86_64::_mm256_mulhi_epi16(
+                        core::arch::x86_64::_mm256_loadu_si256(a.add(k)),
+                        core::arch::x86_64::_mm256_loadu_si256(b.add(k)),
+                    );
+                    core::arch::x86_64::_mm256_storeu_si256(p.add(k), r);
+                }
+            }
+        }
+        #[cfg(not(target_feature = "avx2"))]
+        {
+            // SAFETY: SSE2 is baseline on x86_64; the arrays are 64 bytes, so the four 16-byte
+            // unaligned loads/stores at register offsets 0..4 stay in bounds.
+            unsafe {
+                let a = self.0.as_ptr().cast::<core::arch::x86_64::__m128i>();
+                let b = rhs.0.as_ptr().cast::<core::arch::x86_64::__m128i>();
+                let p = o.as_mut_ptr().cast::<core::arch::x86_64::__m128i>();
+                for k in 0..4 {
+                    let r = core::arch::x86_64::_mm_mulhi_epi16(
+                        core::arch::x86_64::_mm_loadu_si128(a.add(k)),
+                        core::arch::x86_64::_mm_loadu_si128(b.add(k)),
+                    );
+                    core::arch::x86_64::_mm_storeu_si128(p.add(k), r);
+                }
+            }
+        }
+        Self(o)
+    }
+}
+
 // I8x64 / I16x32: AVX2 scalar polyfill — methods matching the AVX-512BW API
 impl I8x64 {
     #[inline(always)]
@@ -1755,6 +1811,120 @@ avx2_int_type!(I64x8, i64, 8, 0i64);
 avx2_int_type!(U16x32, u16, 32, 0u16);
 avx2_int_type!(U32x16, u32, 16, 0u32);
 avx2_int_type!(U64x8, u64, 8, 0u64);
+
+impl U16x32 {
+    /// High half of the lane-wise widened product: lane `i` =
+    /// `(self[i] as u32 * rhs[i] as u32) >> 16`, as `u16`.
+    ///
+    /// Realized with `pmulh*` (`_mm256_mulhi_epu16` per 256-bit half on AVX2,
+    /// `_mm_mulhi_epu16` per 128-bit quarter on the AVX-without-AVX2 arm).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let r = U16x32::splat(0x8000).mul_high(U16x32::splat(4)).to_array();
+    /// assert_eq!(r, [2; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        let mut o = [0 as u16; 32];
+        #[cfg(target_feature = "avx2")]
+        {
+            // SAFETY: AVX2 is enabled at compile time on this arm; `self.0`, `rhs.0` and `o`
+            // are 32-element u16 arrays (64 bytes), so the two 32-byte unaligned
+            // loads/stores at register offsets 0 and 1 stay in bounds; loadu/storeu need no alignment.
+            unsafe {
+                let a = self.0.as_ptr().cast::<core::arch::x86_64::__m256i>();
+                let b = rhs.0.as_ptr().cast::<core::arch::x86_64::__m256i>();
+                let p = o.as_mut_ptr().cast::<core::arch::x86_64::__m256i>();
+                for k in 0..2 {
+                    let r = core::arch::x86_64::_mm256_mulhi_epu16(
+                        core::arch::x86_64::_mm256_loadu_si256(a.add(k)),
+                        core::arch::x86_64::_mm256_loadu_si256(b.add(k)),
+                    );
+                    core::arch::x86_64::_mm256_storeu_si256(p.add(k), r);
+                }
+            }
+        }
+        #[cfg(not(target_feature = "avx2"))]
+        {
+            // SAFETY: SSE2 is baseline on x86_64; the arrays are 64 bytes, so the four 16-byte
+            // unaligned loads/stores at register offsets 0..4 stay in bounds.
+            unsafe {
+                let a = self.0.as_ptr().cast::<core::arch::x86_64::__m128i>();
+                let b = rhs.0.as_ptr().cast::<core::arch::x86_64::__m128i>();
+                let p = o.as_mut_ptr().cast::<core::arch::x86_64::__m128i>();
+                for k in 0..4 {
+                    let r = core::arch::x86_64::_mm_mulhi_epu16(
+                        core::arch::x86_64::_mm_loadu_si128(a.add(k)),
+                        core::arch::x86_64::_mm_loadu_si128(b.add(k)),
+                    );
+                    core::arch::x86_64::_mm_storeu_si128(p.add(k), r);
+                }
+            }
+        }
+        Self(o)
+    }
+}
+
+impl U32x16 {
+    /// Full 64-bit product of the even `u32` lanes: lane `k` (0..8) =
+    /// `(self[2k] as u64) * (rhs[2k] as u64)`. Odd lanes are ignored.
+    ///
+    /// Realized with `pmuludq` (`_mm256_mul_epu32` per 256-bit half on AVX2,
+    /// `_mm_mul_epu32` per 128-bit quarter on the AVX-without-AVX2 arm).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(u32::MAX);
+    /// let w = a.mul_widen_even(a).to_array();
+    /// assert_eq!(w, [u64::from(u32::MAX) * u64::from(u32::MAX); 8]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_widen_even(self, rhs: Self) -> U64x8 {
+        let mut o = [0u64; 8];
+        #[cfg(target_feature = "avx2")]
+        {
+            // SAFETY: AVX2 is enabled at compile time on this arm; inputs are 64-byte arrays and
+            // `o` is 64 bytes, so the two 32-byte unaligned loads/stores at register offsets 0
+            // and 1 stay in bounds. Register k yields u64 lanes 4k..4k+4.
+            unsafe {
+                let a = self.0.as_ptr().cast::<core::arch::x86_64::__m256i>();
+                let b = rhs.0.as_ptr().cast::<core::arch::x86_64::__m256i>();
+                let p = o.as_mut_ptr().cast::<core::arch::x86_64::__m256i>();
+                for k in 0..2 {
+                    let r = core::arch::x86_64::_mm256_mul_epu32(
+                        core::arch::x86_64::_mm256_loadu_si256(a.add(k)),
+                        core::arch::x86_64::_mm256_loadu_si256(b.add(k)),
+                    );
+                    core::arch::x86_64::_mm256_storeu_si256(p.add(k), r);
+                }
+            }
+        }
+        #[cfg(not(target_feature = "avx2"))]
+        {
+            // SAFETY: SSE2 is baseline on x86_64; inputs and `o` are 64 bytes, so the four
+            // 16-byte unaligned loads/stores at register offsets 0..4 stay in bounds.
+            // Register k yields u64 lanes 2k..2k+2.
+            unsafe {
+                let a = self.0.as_ptr().cast::<core::arch::x86_64::__m128i>();
+                let b = rhs.0.as_ptr().cast::<core::arch::x86_64::__m128i>();
+                let p = o.as_mut_ptr().cast::<core::arch::x86_64::__m128i>();
+                for k in 0..4 {
+                    let r = core::arch::x86_64::_mm_mul_epu32(
+                        core::arch::x86_64::_mm_loadu_si128(a.add(k)),
+                        core::arch::x86_64::_mm_loadu_si128(b.add(k)),
+                    );
+                    core::arch::x86_64::_mm_storeu_si128(p.add(k), r);
+                }
+            }
+        }
+        U64x8(o)
+    }
+}
 
 /// u64 ARX rotate — the BLAKE2b / argon2 lane, and the mask family's
 /// word rotate.

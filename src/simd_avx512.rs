@@ -1928,6 +1928,23 @@ impl U16x32 {
     }
 }
 
+impl U16x32 {
+    /// Per-lane high half of the unsigned 16x16 product: `((a * b) >> 16) as u16` (`vpmulhuw`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U16x32;
+    /// let r = U16x32::splat(0x8000).mul_high(U16x32::splat(4)).to_array();
+    /// assert_eq!(r, [2u16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        // SAFETY: avx512bw/avx512f is compiled in on this arm; register-only.
+        Self(unsafe { _mm512_mulhi_epu16(self.0, rhs.0) })
+    }
+}
+
 impl Default for U16x32 {
     #[inline(always)]
     fn default() -> Self {
@@ -2227,6 +2244,24 @@ impl U32x16 {
             nh[c] = if c & G != 0 { h[c] } else { l[c ^ G] };
         }
         (Self::from_array(nl), Self::from_array(nh))
+    }
+}
+
+impl U32x16 {
+    /// Full 64-bit product of the even u32 lanes (odd lanes ignored): lane k = `a[2k] * b[2k]` (`vpmuludq`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::U32x16;
+    /// let a = U32x16::splat(u32::MAX);
+    /// let w = a.mul_widen_even(a).to_array();
+    /// assert_eq!(w, [u64::from(u32::MAX) * u64::from(u32::MAX); 8]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_widen_even(self, rhs: Self) -> U64x8 {
+        // SAFETY: avx512bw/avx512f is compiled in on this arm; register-only.
+        U64x8(unsafe { _mm512_mul_epu32(self.0, rhs.0) })
     }
 }
 
@@ -2956,6 +2991,23 @@ impl I16x32 {
     #[inline(always)]
     pub fn cmp_gt(self, other: Self) -> u32 {
         unsafe { _mm512_cmpgt_epi16_mask(self.0, other.0) }
+    }
+}
+
+impl I16x32 {
+    /// Per-lane high half of the signed 16x16 product: `((a * b) >> 16) as i16` (arithmetic shift, `vpmulhw`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ndarray::simd::I16x32;
+    /// let r = I16x32::splat(-32768).mul_high(I16x32::splat(2)).to_array();
+    /// assert_eq!(r, [-1i16; 32]);
+    /// ```
+    #[inline(always)]
+    pub fn mul_high(self, rhs: Self) -> Self {
+        // SAFETY: avx512bw/avx512f is compiled in on this arm; register-only.
+        Self(unsafe { _mm512_mulhi_epi16(self.0, rhs.0) })
     }
 }
 
