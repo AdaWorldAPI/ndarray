@@ -343,3 +343,12 @@ Reading it:
 Net: on AVX2 the PR's measurable value is three things (mask_blend, f32 compare+select, f32 reductions) and
 the new API; the rest of F2's rewrite is neutral, and the f64 reductions are worse. Lesson: read the
 disassembly of the existing code BEFORE calling a lane loop "scalar" — the source shape is not the codegen.
+
+**Fixed 2026-11-17 (operator: "add_mul, as_chunks etc in simd_ops should help").** The AVX2
+`F64x8::reduce_min` / `reduce_max` are back to master's body — an iterator fold over the fixed-size lane
+array, the shape `simd_ops` is built on. Measured on the same probe: 2.0 ns and 21 instructions again
+(before 2.15 / after-PR 4.03 / fixed 1.7–2.2 over three runs); fingerprint unchanged; guard clean (a fold
+over a fixed array is not an R2 lane loop). Rule taken from it: express an op as a fixed-size-array
+expression (`as_chunks`, `array_chunks`, the closure-parameterized `simd_ops` helpers, the typed vectors'
+own methods) and let the compiler lower it; reach for intrinsics only where the disassembly shows it did
+not vectorize (`U8x64::mask_blend`, `F32x16` compare+select, `F32x16` reductions).

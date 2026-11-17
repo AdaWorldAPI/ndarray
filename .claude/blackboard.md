@@ -1,3 +1,11 @@
+## 2026-11-17 — FIXED: AVX2 F64x8::reduce_min/max regression (restore master's array fold)
+
+Operator hint: the simd_ops shapes (add_mul, as_chunks) are the way. Master's reduce body was already that
+shape (iterator fold over the fixed lane array); restored it. Probe: 4.03 → 2.0 ns, 27 → 21 insns, same as
+before PR #435; fingerprint and IEEE digest unchanged; lane_masks NaN-compat tests 9/9 on v3 and avx; lib
+2692 (v3); guard clean. WORKING RULE: write ops as fixed-size-array expressions and read the disassembly
+first; intrinsics only where the compiler demonstrably did not vectorize.
+
 ## 2026-11-17 — RESULT: PR #435 before/after per method, llvm-objdump + timing (doc § 7)
 
 v4: 30/30 probe symbols disassemble identically before/after — the PR changed no AVX-512 code; timing noise

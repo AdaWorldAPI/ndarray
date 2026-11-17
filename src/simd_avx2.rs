@@ -890,11 +890,17 @@ impl F64x8 {
     }
     #[inline(always)]
     pub fn reduce_min(self) -> f64 {
-        self.0.reduce_min().min(self.1.reduce_min())
+        // A fold over the fixed-size lane array (the `simd_ops` shape). LLVM
+        // lowers it to a short `vminsd` chain; measured 2.15 ns against
+        // 4.03 ns for a hand-written NaN-ignoring `vminpd`/`vblendvpd` tree
+        // (knowledge doc, wide/pulp comparison § 7).
+        let a = self.to_array();
+        a.iter().copied().fold(f64::INFINITY, f64::min)
     }
     #[inline(always)]
     pub fn reduce_max(self) -> f64 {
-        self.0.reduce_max().max(self.1.reduce_max())
+        let a = self.to_array();
+        a.iter().copied().fold(f64::NEG_INFINITY, f64::max)
     }
     #[inline(always)]
     pub fn abs(self) -> Self {
