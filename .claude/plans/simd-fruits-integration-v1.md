@@ -125,6 +125,10 @@ Today `F32x8` has `splat/from_slice/from_array/to_array/copy_to_slice/reduce_sum
 
 ### P2 — the AVX-512-only features this host has and no competitor uses well
 
+> ⊘ **WITHDRAWN 2026-11-17 (operator: "I didn't ask for changing BF16, I told you where to learn
+> from").** F8 is not to be executed. `BF16x16`, `F16`/`F32` + `add_mul` and the `as_chunks` call
+> sites are the REFERENCE for how this facade is built, not debt (see blackboard, same date).
+
 **F8. Fix the bf16 debt.** *(§ 2b)*
 - Remove the name collision: `simd_half::BF16x16([u16;16])` becomes either an alias or a
   re-export of the hardware type on `avx512bf16`, and a scalar type elsewhere. One name

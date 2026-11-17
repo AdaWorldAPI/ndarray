@@ -1,3 +1,22 @@
+## 2026-11-17 — LEARNED from the reference code (operator pointed at BF16x16, F16/F32 + add_mul, as_chunks)
+
+Read-only study; nothing in these files was changed. I had mislabelled them as "debt" (plan F8, now withdrawn).
+- `BF16x16` (simd_avx512.rs): bf16 is a STORAGE format. Widening bf16→f32 is lossless (a shift); the one
+  lossy step, f32→bf16, has exactly one definition (Intel SDM RNE) and the AVX-512-F software path is
+  certified byte-identical to `_mm512_cvtneps_pbh` on every input, so every CPU gives the same bits. The
+  older truncating `f32_to_bf16_scalar` was LEFT IN PLACE for its callers; the new rule got a new name.
+- `add_mul_f32/f64` (simd_ops.rs, simd_runtime/add_mul.rs): compute stays in the wide format; each lane is
+  ONE IEEE rounding (hardware FMA, or the exact software FMA of simd_fma where there is none), and the tail
+  uses the same single-rounded op, so body and tail and every arm agree bit for bit. No narrowing between ops.
+- `as_chunks::<N>()` (simd_soa.rs, hpc/renderer.rs, hpc/statistics.rs): a chunk is a `&[T; N]` — a pointer
+  cast, no copy, no index arithmetic — handed to `from_array(*chunk)`; the remainder is a separate slice.
+Pattern: widen once at the edge, compute exactly in the wide type, narrow once at the other edge with one
+certified rounding; a software fallback is only acceptable if it is bit-identical to the hardware form and a
+test proves it; existing behaviour is never altered — a new semantics gets a new name.
+Checked this branch's additions against it: all are bit-exact and arm-identical by test. One thing to know,
+not changed: on AVX2 a compare result is packed to the public bitmask and re-expanded by `select` (lossless,
+but a pack/expand per use) — that is the cost of keeping `F64Mask8(pub u8)` unchanged.
+
 ## 2026-11-17 — RULE (operator): every facade method is IEEE bit-exact, identical on every CPU; no round trips
 
 "Every method MUST be ieee bit exact. Any round trip must be prevented by all means. Mantissa bit must be
