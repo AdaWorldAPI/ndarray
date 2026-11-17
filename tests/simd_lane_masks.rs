@@ -279,3 +279,69 @@ fn compare_select_early_exit_loop() {
     });
     assert_eq!(count.to_array(), want);
 }
+
+/// NaN handling of min/max/reduce must stay exactly what `f32::min` /
+/// `fold(INFINITY, f32::min)` give: that is the behaviour the AVX2 and
+/// scalar 512-bit types had before plan F2 (it is a compatibility contract,
+/// not a free choice), and the new 256-bit types follow it on every arm.
+macro_rules! nan_minmax_contract {
+    ($vec:ident, $elem:ty, $lanes:expr) => {{
+        let pool: [$elem; 6] = [<$elem>::NAN, 1.0, -2.0, <$elem>::NAN, 3.0, -0.5];
+        for seed in 0..12usize {
+            let a: [$elem; $lanes] = core::array::from_fn(|i| pool[(seed + i) % 6]);
+            let b: [$elem; $lanes] = core::array::from_fn(|i| pool[(seed * 5 + i * 7 + 1) % 6]);
+            let (va, vb) = ($vec::from_array(a), $vec::from_array(b));
+            let (mn, mx) = (va.simd_min(vb).to_array(), va.simd_max(vb).to_array());
+            for i in 0..$lanes {
+                let (wmin, wmax) = (a[i].min(b[i]), a[i].max(b[i]));
+                assert!(
+                    (mn[i].is_nan() && wmin.is_nan()) || mn[i] == wmin,
+                    "{}::simd_min lane {i}: {:?} {:?} got {:?} want {:?}",
+                    stringify!($vec),
+                    a[i],
+                    b[i],
+                    mn[i],
+                    wmin
+                );
+                assert!(
+                    (mx[i].is_nan() && wmax.is_nan()) || mx[i] == wmax,
+                    "{}::simd_max lane {i}: {:?} {:?} got {:?} want {:?}",
+                    stringify!($vec),
+                    a[i],
+                    b[i],
+                    mx[i],
+                    wmax
+                );
+            }
+            let rmin = a.iter().copied().fold(<$elem>::INFINITY, <$elem>::min);
+            let rmax = a.iter().copied().fold(<$elem>::NEG_INFINITY, <$elem>::max);
+            assert_eq!(va.reduce_min(), rmin, "{}::reduce_min {:?}", stringify!($vec), a);
+            assert_eq!(va.reduce_max(), rmax, "{}::reduce_max {:?}", stringify!($vec), a);
+        }
+        // The `nightly-simd` backend has always delegated to `core::simd`'s
+        // `reduce_min`/`reduce_max`, which return NaN for an all-NaN vector;
+        // that pre-existing behaviour is kept unchanged, so only the stable
+        // arms are held to the fold's ±INFINITY here.
+        if !cfg!(feature = "nightly-simd") {
+            let all_nan = $vec::splat(<$elem>::NAN);
+            assert_eq!(all_nan.reduce_min(), <$elem>::INFINITY, "{} all-NaN reduce_min", stringify!($vec));
+            assert_eq!(all_nan.reduce_max(), <$elem>::NEG_INFINITY, "{} all-NaN reduce_max", stringify!($vec));
+        }
+    }};
+}
+
+#[test]
+fn nan_min_max_reduce_follow_f32_min_on_256_bit_types() {
+    nan_minmax_contract!(F32x8, f32, 8);
+    nan_minmax_contract!(F64x4, f64, 4);
+}
+
+/// The 512-bit types on the arms whose master implementation was the
+/// `f32::min` loop: AVX2, AVX-without-AVX2 and the scalar arm (x86-64-v2 and
+/// non-x86 targets other than aarch64/wasm, whose native types are unchanged).
+#[cfg(not(any(target_feature = "avx512f", target_arch = "aarch64", target_arch = "wasm32")))]
+#[test]
+fn nan_min_max_reduce_unchanged_on_avx2_and_scalar_512_bit_types() {
+    nan_minmax_contract!(F32x16, f32, 16);
+    nan_minmax_contract!(F64x8, f64, 8);
+}

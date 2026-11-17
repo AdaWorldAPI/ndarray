@@ -41,6 +41,16 @@ Today `F32x8` has `splat/from_slice/from_array/to_array/copy_to_slice/reduce_sum
 - Witness: `F64x4`/`F32x8` parity tests and masking-parity on all arms; `codegen-witness avx2`
   shows `vcmppd`/`vcmpps` and no `vucomisd` in `F64x8::simd_le`.
 
+> ⊘ **REVISED 2026-11-17 (operator: "the breaking changes are absolutely unacceptable").**
+> The landed F2 first changed the AVX2 `F32Mask16`/`F64Mask8` from `pub u16`/`pub u8` to
+> private lane-mask pairs, and switched AVX2 `simd_min`/`simd_max`/`reduce_*` from `f32::min`
+> to `vminps` NaN semantics. Both were API/behaviour breaks and are reverted: the AVX2 masks
+> keep their public bitmask field exactly as on master; compares are computed per 256-bit half
+> (`vcmpp*` + `vmovmskp*`, no lane loop) and `select` re-expands with `F32Mask8::from_bitmask`
+> + `vblendvp*`; min/max keep `f32::min` NaN semantics via `vminp*` + unordered-compare blend.
+> **Rule from this: no public field, signature or observable result of an existing API may change
+> in this plan — additions only.** The open question below is closed: answer "no".
+
 **F2. Mask types that match each tier.** *(TD1–TD2; from pulp `m64s`, wide)*
 - AVX-512: masks stay `__mmask8`/`__mmask16` (unchanged).
 - AVX2: `F64Mask4(__m256d)`, `F32Mask8(__m256)`, `F64Mask8([__m256d; 2])` and

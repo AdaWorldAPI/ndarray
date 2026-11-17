@@ -3224,66 +3224,106 @@ impl F32x8 {
         }
     }
 
-    /// Smallest lane, folded with `vminps`: on a NaN lane the result follows
-    /// `vminps` (the second operand wins), as on `F32x16::reduce_min`.
+    /// Smallest lane, with the semantics of
+    /// `iter().fold(f32::INFINITY, f32::min)`: NaN lanes are ignored and an
+    /// all-NaN vector gives `f32::INFINITY`. Tree of NaN-ignoring `vminps`.
     ///
     /// ```
     /// use ndarray::simd::F32x8;
-    /// let v = F32x8::from_array([3.0, -1.0, 7.0, 2.0, 9.0, 0.5, 4.0, 8.0]);
-    /// assert_eq!(v.reduce_min(), -1.0);
+    /// let v = F32x8::from_array([f32::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    /// assert_eq!(v.reduce_min(), 1.0);
+    /// assert_eq!(F32x8::splat(f32::NAN).reduce_min(), f32::INFINITY);
     /// ```
     #[inline(always)]
     pub fn reduce_min(self) -> f32 {
-        // SAFETY: AVX/SSE3 register-only ops; this type is only compiled into
-        // x86 arms that have AVX (`simd.rs` routes v2 to the scalar backend).
+        // SAFETY: AVX/SSE3/SSE4.1 register-only ops (x86 arms with AVX only).
         unsafe {
-            let m4 = _mm_min_ps(_mm256_castps256_ps128(self.0), _mm256_extractf128_ps(self.0, 1));
-            let m2 = _mm_min_ps(m4, _mm_movehl_ps(m4, m4));
-            _mm_cvtss_f32(_mm_min_ss(m2, _mm_movehdup_ps(m2)))
+            #[inline(always)]
+            unsafe fn nan_min(a: __m128, b: __m128) -> __m128 {
+                _mm_blendv_ps(_mm_min_ps(a, b), a, _mm_cmpunord_ps(b, b))
+            }
+            let m4 = nan_min(_mm256_castps256_ps128(self.0), _mm256_extractf128_ps(self.0, 1));
+            let m2 = nan_min(m4, _mm_movehl_ps(m4, m4));
+            let r = _mm_cvtss_f32(nan_min(m2, _mm_movehdup_ps(m2)));
+            if r.is_nan() {
+                f32::INFINITY
+            } else {
+                r
+            }
         }
     }
 
-    /// Largest lane, folded with `vmaxps` (NaN: second operand wins).
+    /// Largest lane, with the semantics of
+    /// `iter().fold(f32::NEG_INFINITY, f32::max)`: NaN lanes are ignored and an
+    /// all-NaN vector gives `f32::NEG_INFINITY`. Tree of NaN-ignoring `vmaxps`.
     ///
     /// ```
     /// use ndarray::simd::F32x8;
-    /// let v = F32x8::from_array([3.0, -1.0, 7.0, 2.0, 9.0, 0.5, 4.0, 8.0]);
-    /// assert_eq!(v.reduce_max(), 9.0);
+    /// let v = F32x8::from_array([f32::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    /// assert_eq!(v.reduce_max(), 7.0);
+    /// assert_eq!(F32x8::splat(f32::NAN).reduce_max(), f32::NEG_INFINITY);
     /// ```
     #[inline(always)]
     pub fn reduce_max(self) -> f32 {
-        // SAFETY: as `reduce_min`.
+        // SAFETY: AVX/SSE3/SSE4.1 register-only ops (x86 arms with AVX only).
         unsafe {
-            let m4 = _mm_max_ps(_mm256_castps256_ps128(self.0), _mm256_extractf128_ps(self.0, 1));
-            let m2 = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
-            _mm_cvtss_f32(_mm_max_ss(m2, _mm_movehdup_ps(m2)))
+            #[inline(always)]
+            unsafe fn nan_max(a: __m128, b: __m128) -> __m128 {
+                _mm_blendv_ps(_mm_max_ps(a, b), a, _mm_cmpunord_ps(b, b))
+            }
+            let m4 = nan_max(_mm256_castps256_ps128(self.0), _mm256_extractf128_ps(self.0, 1));
+            let m2 = nan_max(m4, _mm_movehl_ps(m4, m4));
+            let r = _mm_cvtss_f32(nan_max(m2, _mm_movehdup_ps(m2)));
+            if r.is_nan() {
+                f32::NEG_INFINITY
+            } else {
+                r
+            }
         }
     }
 
-    /// Lane-wise minimum, `vminps`: if either lane is NaN the lane of `other`
-    /// is returned (the same rule as `F32x16::simd_min` on AVX-512).
+    /// Lane-wise minimum with `f32::min` NaN semantics: if exactly one lane is
+    /// NaN the other lane is returned (NaN only if both are). Realized as
+    /// `vminps` plus one unordered compare and one `vblendvps` that picks
+    /// `self` where `other` is NaN (`vminps` alone would return `other`).
     ///
     /// ```
     /// use ndarray::simd::F32x8;
-    /// let m = F32x8::splat(1.0).simd_min(F32x8::splat(2.0));
-    /// assert_eq!(m.to_array(), [1.0; 8]);
+    /// let a = F32x8::from_array([f32::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    /// let r = a.simd_min(F32x8::splat(1.0)).to_array();
+    /// assert_eq!(r[0], 1.0); // NaN lane ignored, like f32::min
     /// ```
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
-        // SAFETY: AVX register-only op (see `reduce_min`).
-        Self(unsafe { _mm256_min_ps(self.0, other.0) })
+        // SAFETY: AVX register-only ops (this type is only compiled into x86
+        // arms with AVX).
+        unsafe {
+            let m = _mm256_min_ps(self.0, other.0);
+            let other_nan = _mm256_cmp_ps::<_CMP_UNORD_Q>(other.0, other.0);
+            Self(_mm256_blendv_ps(m, self.0, other_nan))
+        }
     }
 
-    /// Lane-wise maximum, `vmaxps` (NaN: the lane of `other` is returned).
+    /// Lane-wise maximum with `f32::max` NaN semantics: if exactly one lane is
+    /// NaN the other lane is returned (NaN only if both are). Realized as
+    /// `vmaxps` plus one unordered compare and one `vblendvps` that picks
+    /// `self` where `other` is NaN (`vmaxps` alone would return `other`).
     ///
     /// ```
     /// use ndarray::simd::F32x8;
-    /// assert_eq!(F32x8::splat(1.0).simd_max(F32x8::splat(2.0)).to_array(), [2.0; 8]);
+    /// let a = F32x8::from_array([f32::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    /// let r = a.simd_max(F32x8::splat(1.0)).to_array();
+    /// assert_eq!(r[0], 1.0); // NaN lane ignored, like f32::max
     /// ```
     #[inline(always)]
     pub fn simd_max(self, other: Self) -> Self {
-        // SAFETY: AVX register-only op.
-        Self(unsafe { _mm256_max_ps(self.0, other.0) })
+        // SAFETY: AVX register-only ops (this type is only compiled into x86
+        // arms with AVX).
+        unsafe {
+            let m = _mm256_max_ps(self.0, other.0);
+            let other_nan = _mm256_cmp_ps::<_CMP_UNORD_Q>(other.0, other.0);
+            Self(_mm256_blendv_ps(m, self.0, other_nan))
+        }
     }
 
     /// `self.simd_max(lo).simd_min(hi)`.
@@ -3677,59 +3717,104 @@ impl F64x4 {
         }
     }
 
-    /// Smallest lane, folded with `vminpd` (NaN: second operand wins).
+    /// Smallest lane, with the semantics of
+    /// `iter().fold(f64::INFINITY, f64::min)`: NaN lanes are ignored and an
+    /// all-NaN vector gives `f64::INFINITY`. Tree of NaN-ignoring `vminpd`.
     ///
     /// ```
     /// use ndarray::simd::F64x4;
-    /// assert_eq!(F64x4::from_array([3.0, -1.0, 7.0, 2.0]).reduce_min(), -1.0);
+    /// let v = F64x4::from_array([f64::NAN, 1.0, 2.0, 3.0]);
+    /// assert_eq!(v.reduce_min(), 1.0);
+    /// assert_eq!(F64x4::splat(f64::NAN).reduce_min(), f64::INFINITY);
     /// ```
     #[inline(always)]
     pub fn reduce_min(self) -> f64 {
-        // SAFETY: AVX/SSE2 register-only ops (x86 arms with AVX only).
+        // SAFETY: AVX/SSE4.1 register-only ops (x86 arms with AVX only).
         unsafe {
-            let m2 = _mm_min_pd(_mm256_castpd256_pd128(self.0), _mm256_extractf128_pd(self.0, 1));
-            _mm_cvtsd_f64(_mm_min_sd(m2, _mm_unpackhi_pd(m2, m2)))
+            #[inline(always)]
+            unsafe fn nan_min(a: __m128d, b: __m128d) -> __m128d {
+                _mm_blendv_pd(_mm_min_pd(a, b), a, _mm_cmpunord_pd(b, b))
+            }
+            let m2 = nan_min(_mm256_castpd256_pd128(self.0), _mm256_extractf128_pd(self.0, 1));
+            let r = _mm_cvtsd_f64(nan_min(m2, _mm_unpackhi_pd(m2, m2)));
+            if r.is_nan() {
+                f64::INFINITY
+            } else {
+                r
+            }
         }
     }
 
-    /// Largest lane, folded with `vmaxpd` (NaN: second operand wins).
+    /// Largest lane, with the semantics of
+    /// `iter().fold(f64::NEG_INFINITY, f64::max)`: NaN lanes are ignored and an
+    /// all-NaN vector gives `f64::NEG_INFINITY`. Tree of NaN-ignoring `vmaxpd`.
     ///
     /// ```
     /// use ndarray::simd::F64x4;
-    /// assert_eq!(F64x4::from_array([3.0, -1.0, 7.0, 2.0]).reduce_max(), 7.0);
+    /// let v = F64x4::from_array([f64::NAN, 1.0, 2.0, 3.0]);
+    /// assert_eq!(v.reduce_max(), 3.0);
+    /// assert_eq!(F64x4::splat(f64::NAN).reduce_max(), f64::NEG_INFINITY);
     /// ```
     #[inline(always)]
     pub fn reduce_max(self) -> f64 {
-        // SAFETY: as `reduce_min`.
+        // SAFETY: AVX/SSE4.1 register-only ops (x86 arms with AVX only).
         unsafe {
-            let m2 = _mm_max_pd(_mm256_castpd256_pd128(self.0), _mm256_extractf128_pd(self.0, 1));
-            _mm_cvtsd_f64(_mm_max_sd(m2, _mm_unpackhi_pd(m2, m2)))
+            #[inline(always)]
+            unsafe fn nan_max(a: __m128d, b: __m128d) -> __m128d {
+                _mm_blendv_pd(_mm_max_pd(a, b), a, _mm_cmpunord_pd(b, b))
+            }
+            let m2 = nan_max(_mm256_castpd256_pd128(self.0), _mm256_extractf128_pd(self.0, 1));
+            let r = _mm_cvtsd_f64(nan_max(m2, _mm_unpackhi_pd(m2, m2)));
+            if r.is_nan() {
+                f64::NEG_INFINITY
+            } else {
+                r
+            }
         }
     }
 
-    /// Lane-wise minimum, `vminpd`: if either lane is NaN the lane of `other`
-    /// is returned (the same rule as `F64x8::simd_min` on AVX-512).
+    /// Lane-wise minimum with `f64::min` NaN semantics: if exactly one lane is
+    /// NaN the other lane is returned (NaN only if both are). Realized as
+    /// `vminpd` plus one unordered compare and one `vblendvpd` that picks
+    /// `self` where `other` is NaN (`vminpd` alone would return `other`).
     ///
     /// ```
     /// use ndarray::simd::F64x4;
-    /// assert_eq!(F64x4::splat(1.0).simd_min(F64x4::splat(2.0)).to_array(), [1.0; 4]);
+    /// let a = F64x4::from_array([f64::NAN, 1.0, 2.0, 3.0]);
+    /// let r = a.simd_min(F64x4::splat(1.0)).to_array();
+    /// assert_eq!(r[0], 1.0); // NaN lane ignored, like f64::min
     /// ```
     #[inline(always)]
     pub fn simd_min(self, other: Self) -> Self {
-        // SAFETY: AVX register-only op.
-        Self(unsafe { _mm256_min_pd(self.0, other.0) })
+        // SAFETY: AVX register-only ops (this type is only compiled into x86
+        // arms with AVX).
+        unsafe {
+            let m = _mm256_min_pd(self.0, other.0);
+            let other_nan = _mm256_cmp_pd::<_CMP_UNORD_Q>(other.0, other.0);
+            Self(_mm256_blendv_pd(m, self.0, other_nan))
+        }
     }
 
-    /// Lane-wise maximum, `vmaxpd` (NaN: the lane of `other` is returned).
+    /// Lane-wise maximum with `f64::max` NaN semantics: if exactly one lane is
+    /// NaN the other lane is returned (NaN only if both are). Realized as
+    /// `vmaxpd` plus one unordered compare and one `vblendvpd` that picks
+    /// `self` where `other` is NaN (`vmaxpd` alone would return `other`).
     ///
     /// ```
     /// use ndarray::simd::F64x4;
-    /// assert_eq!(F64x4::splat(1.0).simd_max(F64x4::splat(2.0)).to_array(), [2.0; 4]);
+    /// let a = F64x4::from_array([f64::NAN, 1.0, 2.0, 3.0]);
+    /// let r = a.simd_max(F64x4::splat(1.0)).to_array();
+    /// assert_eq!(r[0], 1.0); // NaN lane ignored, like f64::max
     /// ```
     #[inline(always)]
     pub fn simd_max(self, other: Self) -> Self {
-        // SAFETY: AVX register-only op.
-        Self(unsafe { _mm256_max_pd(self.0, other.0) })
+        // SAFETY: AVX register-only ops (this type is only compiled into x86
+        // arms with AVX).
+        unsafe {
+            let m = _mm256_max_pd(self.0, other.0);
+            let other_nan = _mm256_cmp_pd::<_CMP_UNORD_Q>(other.0, other.0);
+            Self(_mm256_blendv_pd(m, self.0, other_nan))
+        }
     }
 
     /// `self.simd_max(lo).simd_min(hi)`.

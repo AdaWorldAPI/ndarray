@@ -1,3 +1,22 @@
+## 2026-11-17 — CORRECTION: simd-fruits breaking changes reverted (operator: "absolutely unacceptable")
+
+Two breaks had shipped on PR #435 and are removed:
+1. AVX2 `F32Mask16(pub u16)` / `F64Mask8(pub u8)` had become private lane-mask pairs → restored byte-for-
+   byte (struct lines identical to master); `hpc/splat3d/raster.rs` reverted to master. The speedup stays:
+   compares = per-half `vcmpp*` packed with `vmovmskp*` (`from_halves`), `select` = `from_bitmask` +
+   `vblendvp*`; operators/any/all/none come from `impl_bitmask_mask_api!` (additive).
+2. AVX2 `simd_min/max` had switched to vminps NaN rule → restored `f32::min` semantics: `F32x8/F64x4`
+   simd_min/max = `vminp*` + `cmpunord(other)` blend of `self`; reduce_* = NaN-ignoring tree, all-NaN →
+   ±INFINITY (= master's `fold(INFINITY, f32::min)`).
+Evidence: every `pub fn/struct/type/use/mod/const` line of master exists unchanged on the branch (14 files,
+0 missing); new compat tests `nan_min_max_reduce_*` in tests/simd_lane_masks.rs (disable run: drop the NaN
+blend → both red); lib 2743 (v4) / 2692 (v3); all 5 parity test files on v4, v3, avx, v2, aarch64-qemu,
+nightly; masking-parity 6 arms PASS; clippy/guard/gen-check/no-std clean. Nightly backend left exactly as
+on master (its all-NaN reduce returns NaN — pre-existing, test exempts only that case on nightly).
+RULE (recorded in plan F2): this plan is additions-only — no existing public field, signature or result
+changes. Residual, not a break: new inherent methods (e.g. `is_nan`, `any`) take precedence over a
+downstream trait method of the same name on these types.
+
 ## 2026-11-17 — LANDED: simd-fruits F4 (masked tail load/store) — P0 F1/F2 + P1 F4–F7 complete
 
 `load_partial(&[T])` / `store_partial(&mut [T])` on F32x16, F64x8, F32x8, F64x4, U8x64, I32x16, U32x16
