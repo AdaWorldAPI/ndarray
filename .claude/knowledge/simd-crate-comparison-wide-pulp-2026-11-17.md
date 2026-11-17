@@ -243,3 +243,103 @@ Why ndarray is still behind, from the disassembly of the hot closure:
   `vminsd`/`vmaxsd` saturation) because the facade has no vector `F64x8` → integer conversion; wide uses
   `round_int`, pulp counts in `u64` lanes with `select_u64s`. Not measured in isolation.
 - wide's AVX2 `any()` lowers to 8–16 scalar `vucomisd` + `cmov` here, yet wide8 is still the fastest v3 arm.
+
+## 7. Before / after PR #435, method by method — llvm-objdump + timing (2026-11-17)
+
+Probe: one `#[inline(never)] #[no_mangle]` function per facade method, built against ndarray `bf112d2`
+(before) and `09cdaa1` (after) at `-C target-cpu=x86-64-v3` and `-v4`, opt-level 3, rustc 1.99.0,
+disassembled with `llvm-objdump -d`. Timing: 2,000,000 calls, best of 7 inside a run, best of 5 runs
+interleaved before/after; every output is passed through `black_box` (a first harness without that
+reported 0.3 ns for the out-pointer probes — the calls were being optimized away; those numbers were
+discarded). The result fingerprint is identical in all four binaries (`0x4ffeb11112ae9530`).
+
+```
+== x86-64-v3: instructions (total / scalar-FP / branches) and ns per call (best of 5 runs)
+method                    insns before   insns after  ns before  ns after   change
+p_f64x8_simd_le              9/ 0/ 0      12/ 0/ 0        1.81      1.85    0.98x
+p_f64x8_simd_lt              9/ 0/ 0      12/ 0/ 0        1.71      1.87    0.91x  SLOWER
+p_f64x8_simd_eq              9/ 0/ 0      12/ 0/ 0        1.81      1.85    0.98x
+p_f64x8_simd_ne              9/ 0/ 0      12/ 0/ 0        1.84      1.74    1.06x
+p_f64x8_le_select           22/ 1/ 0      26/ 0/ 0        3.29      3.17    1.04x
+p_f64x8_simd_min            14/ 0/ 0      14/ 0/ 0        2.23      2.06    1.08x  FASTER
+p_f64x8_simd_max            14/ 0/ 0      14/ 0/ 0        2.30      2.12    1.08x  FASTER
+p_f64x8_sqrt                 6/ 0/ 0       6/ 0/ 0        6.90      6.71    1.03x
+p_f64x8_round                6/ 0/ 0       6/ 0/ 0        1.44      1.40    1.03x
+p_f64x8_floor                6/ 0/ 0       6/ 0/ 0        1.41      1.27    1.11x  FASTER
+p_f64x8_abs                  7/ 0/ 0       7/ 0/ 0        1.21      1.12    1.08x  FASTER
+p_f64x8_reduce_min          21/10/ 0      27/ 4/ 0        2.15      4.03    0.53x  SLOWER
+p_f64x8_reduce_max          21/10/ 0      27/ 4/ 0        2.11      4.00    0.53x  SLOWER
+p_f32x16_simd_le            11/ 0/ 0      14/ 0/ 0        1.82      1.74    1.05x
+p_f32x16_simd_lt            11/ 0/ 0      14/ 0/ 0        1.58      1.73    0.91x  SLOWER
+p_f32x16_simd_eq            11/ 0/ 0      14/ 0/ 0        1.76      1.83    0.96x
+p_f32x16_simd_ne            11/ 0/ 0      14/ 0/ 0        1.81      1.83    0.99x
+p_f32x16_le_select          80/ 1/ 0      26/ 0/ 0        7.91      3.32    2.38x  FASTER
+p_f32x16_simd_min           14/ 0/ 0      14/ 0/ 0        2.29      2.21    1.04x
+p_f32x16_simd_max           14/ 0/ 0      14/ 0/ 0        2.27      2.22    1.02x
+p_f32x16_sqrt                6/ 0/ 0       6/ 0/ 0        3.54      3.42    1.04x
+p_f32x16_round               6/ 0/ 0       6/ 0/ 0        1.46      1.42    1.03x
+p_f32x16_floor               6/ 0/ 0       6/ 0/ 0        1.47      1.40    1.05x
+p_f32x16_reduce_min         53/26/ 0      35/ 4/ 0        9.49      5.81    1.63x  FASTER
+p_f32x16_reduce_max         53/26/ 0      35/ 4/ 0        9.37      5.75    1.63x  FASTER
+p_u8x64_saturating_add       8/ 0/ 0       8/ 0/ 0        1.64      1.57    1.04x
+p_u8x64_saturating_sub       8/ 0/ 0       8/ 0/ 0        1.62      1.57    1.03x
+p_u8x64_mask_blend         377/ 0/65      30/ 0/ 0       28.78      2.89    9.96x  FASTER
+c_f64x8_add                  8/ 0/ 0       8/ 0/ 0        1.58      1.36    1.16x  FASTER
+c_f64x8_mul_add             10/ 0/ 0      10/ 0/ 0        1.76      1.61    1.09x  FASTER
+
+== x86-64-v4: instructions (total / scalar-FP / branches) and ns per call (best of 5 runs)
+method                    insns before   insns after  ns before  ns after   change
+p_f64x8_simd_le              5/ 0/ 0       5/ 0/ 0        1.76      1.67    1.05x
+p_f64x8_simd_lt              5/ 0/ 0       5/ 0/ 0        1.61      1.62    0.99x
+p_f64x8_simd_eq              5/ 0/ 0       5/ 0/ 0        1.61      1.60    1.01x
+p_f64x8_simd_ne              5/ 0/ 0       5/ 0/ 0        1.59      1.41    1.13x  FASTER
+p_f64x8_le_select            7/ 0/ 0       7/ 0/ 0        2.10      1.77    1.19x  FASTER
+p_f64x8_simd_min             5/ 0/ 0       5/ 0/ 0        1.71      1.62    1.06x
+p_f64x8_simd_max             5/ 0/ 0       5/ 0/ 0        1.70      1.76    0.97x
+p_f64x8_sqrt                 4/ 0/ 0       4/ 0/ 0        7.36      7.24    1.02x
+p_f64x8_round                4/ 0/ 0       4/ 0/ 0        1.49      1.51    0.99x
+p_f64x8_floor                4/ 0/ 0       4/ 0/ 0        1.47      1.46    1.01x
+p_f64x8_abs                  5/ 0/ 0       5/ 0/ 0        1.27      1.38    0.92x  SLOWER
+p_f64x8_reduce_min           8/ 1/ 0       8/ 1/ 0        1.17      1.16    1.01x
+p_f64x8_reduce_max           8/ 1/ 0       8/ 1/ 0        1.19      1.17    1.02x
+p_f32x16_simd_le             5/ 0/ 0       5/ 0/ 0        1.37      1.34    1.02x
+p_f32x16_simd_lt             5/ 0/ 0       5/ 0/ 0        1.38      1.39    0.99x
+p_f32x16_simd_eq             5/ 0/ 0       5/ 0/ 0        1.53      1.36    1.12x  FASTER
+p_f32x16_simd_ne             5/ 0/ 0       5/ 0/ 0        1.41      1.35    1.04x
+p_f32x16_le_select           7/ 0/ 0       7/ 0/ 0        1.92      1.78    1.08x  FASTER
+p_f32x16_simd_min            5/ 0/ 0       5/ 0/ 0        1.68      1.48    1.14x  FASTER
+p_f32x16_simd_max            5/ 0/ 0       5/ 0/ 0        1.65      1.48    1.11x  FASTER
+p_f32x16_sqrt                4/ 0/ 0       4/ 0/ 0        3.53      3.34    1.06x
+p_f32x16_round               4/ 0/ 0       4/ 0/ 0        1.47      1.31    1.12x  FASTER
+p_f32x16_floor               4/ 0/ 0       4/ 0/ 0        1.48      1.32    1.12x  FASTER
+p_f32x16_reduce_min         10/ 1/ 0      10/ 1/ 0        1.41      1.16    1.22x  FASTER
+p_f32x16_reduce_max         10/ 1/ 0      10/ 1/ 0        1.38      1.16    1.19x  FASTER
+p_u8x64_saturating_add       5/ 0/ 0       5/ 0/ 0        1.63      1.40    1.16x  FASTER
+p_u8x64_saturating_sub       5/ 0/ 0       5/ 0/ 0        1.65      1.40    1.18x  FASTER
+p_u8x64_mask_blend           6/ 0/ 0       6/ 0/ 0        1.54      1.29    1.19x  FASTER
+c_f64x8_add                  5/ 0/ 0       5/ 0/ 0        1.62      1.40    1.16x  FASTER
+c_f64x8_mul_add              6/ 0/ 0       6/ 0/ 0        1.71      1.42    1.20x  FASTER
+```
+
+Reading it:
+- **AVX-512 (v4): the PR changed no generated code.** All 30 probe symbols disassemble identically before
+  and after. The v4 timing column is therefore pure noise, and it reaches ±20% on this host (see the
+  untouched controls `c_f64x8_add` 1.16×, `c_f64x8_mul_add` 1.20×). Only v3 changes beyond that band count.
+- **AVX2 (v3): LLVM had already vectorized the "scalar lane loops".** Before the PR, `F64x8::simd_le` was 9
+  instructions with zero scalar FP ops (`vcmplepd` ×2, `vpackssdw`, `vpermq`, `vmovmskps`). sqrt / round /
+  floor / abs and the U8x64 saturating ops are byte-identical before and after; min / max have the same
+  instruction count. The hand-written halves bought nothing there.
+- **The compares got 3 instructions longer** (12 vs 9, 14 vs 11): going through `F64Mask4::to_bitmask` adds
+  `vpxor` + `vpcmpgtq` ×2, because LLVM re-derives the sign bits it can no longer see are a compare result.
+  Timing is inside the noise band.
+- **REGRESSION introduced by the PR: `F64x8::reduce_min` / `reduce_max` on AVX2 are 1.9× slower**
+  (2.15 → 4.03 ns; 21 → 27 instructions). The NaN-ignoring tree (`vminpd` + `vcmpunordpd` + `vblendvpd` per
+  level) is longer than what LLVM made of master's `fold(INFINITY, f64::min)` (a `vminsd` chain with two
+  NaN fix-ups).
+- **Real gains on AVX2:** `U8x64::mask_blend` 10.0× (377 instructions with 65 branches → 30, branch-free);
+  `F32x16` compare + select 2.4× (80 → 26 instructions); `F32x16::reduce_min/max` 1.6× (53 → 35, scalar FP
+  ops 26 → 4).
+
+Net: on AVX2 the PR's measurable value is three things (mask_blend, f32 compare+select, f32 reductions) and
+the new API; the rest of F2's rewrite is neutral, and the f64 reductions are worse. Lesson: read the
+disassembly of the existing code BEFORE calling a lane loop "scalar" — the source shape is not the codegen.

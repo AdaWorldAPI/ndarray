@@ -1,3 +1,16 @@
+## 2026-11-17 — RESULT: PR #435 before/after per method, llvm-objdump + timing (doc § 7)
+
+v4: 30/30 probe symbols disassemble identically before/after — the PR changed no AVX-512 code; timing noise
+on this host is ±20% (controls). v3: LLVM had ALREADY vectorized master's lane loops (simd_le = 9 insns, 0
+scalar FP); sqrt/round/floor/abs/saturating are byte-identical before/after; compares are now 3 insns longer
+(vpxor + 2× vpcmpgtq via to_bitmask). REGRESSION (mine): AVX2 `F64x8::reduce_min/max` 2.15 → 4.03 ns (1.9×
+slower; NaN-ignoring blend tree vs LLVM's vminsd chain). Real AVX2 gains: `U8x64::mask_blend` 10.0×
+(377 → 30 insns, 65 branches → 0), `F32x16` compare+select 2.4× (80 → 26), `F32x16::reduce_min/max` 1.6×.
+First harness was wrong (0.3 ns: out-pointer calls optimized away) — fixed with black_box on every output.
+OPEN, operator decision: restore master's bodies where the PR is neutral or worse (the f64 reductions for
+certain) — master's bodies are lane loops, which FACET STRIDE R2 forbids as a shape, so rule and measurement
+disagree here.
+
 ## 2026-11-17 — RESULT: Mandelbrot wide / pulp / ndarray, v4 and v3 (doc § 6 of simd-crate-comparison-wide-pulp)
 
 Single-thread medians, ms (3200², median of 15): v4 — wide8 156, pulp 155, ndarray 170, wide(f64x4) 231,
