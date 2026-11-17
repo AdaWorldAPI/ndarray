@@ -18,6 +18,7 @@
 ///
 /// `$vec` is the vector type whose comparisons produce this mask; it is used
 /// only for the doc examples.
+#[allow(unused_macros)] // not every arm instantiates it (e.g. nightly-simd off x86)
 macro_rules! impl_bitmask_mask_api {
     ($mask:ident, $prim:ty, $lanes:expr, $vec:ident) => {
         impl $mask {

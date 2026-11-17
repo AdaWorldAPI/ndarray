@@ -236,6 +236,7 @@ mod dimension;
 
 /// Shared mask API macro (`from_bitmask`, `any`, `all`, `none`, `& | ^ !`)
 /// for the bitmask-backed SIMD masks; must precede every backend module.
+#[cfg(feature = "std")]
 #[macro_use]
 mod simd_mask_api;
 

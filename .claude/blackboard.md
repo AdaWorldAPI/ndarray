@@ -1,3 +1,17 @@
+## 2026-11-17 — LANDED: simd-fruits F7 + CI fix (AVX2 U8x64 burn-down; D-ADD-PM loose end closed)
+
+AVX2 `U8x64::saturating_add/sub` are two `U8x32` vpaddusb/vpsubusb halves; `mask_blend(u64)` expands
+the bits to MSB byte masks with a SWAR multiply (bits*0x0101.. & 0x8040201008040201, +0x7F | ., &0x80..)
+— no shuffle, no table — then two vpblendvb. Measured D-ADD-PM, pinned v3, best of 50, same host:
+add_pm 285.6 → 48.6 ns / 64 lanes (5.9×), sub_pm 289.6 → 52.1 ns; decode path 133–135 ns both runs, so
+add_pm on AVX2 now beats decode 2.7× (was 0.47×). tests/simd_u8x64_blend.rs 3/3 + add_pm 11/11 on v4,
+v3, avx, v2. Sonnet card: 1 run, 0 defects.
+CI fix in the same commit (red since F1 on PR #435, caught by CI, not by my local gates): (1) no-std
+builds left `impl_bitmask_mask_api` unused under -D warnings → module gated on `std`, lint allowed;
+(2) appended code after `// GEN-TERNLOG-END` in simd_avx2.rs = generator drift → moved above BEGIN.
+LESSON: add `cargo check --no-default-features` and `python3 tools/gen_ternlog_bodies.py --check` to
+the local gate list for any simd_*.rs change.
+
 ## 2026-11-17 — LANDED: simd-fruits F6 (widening / high-half multiply)
 
 `U32x16::mul_widen_even -> U64x8` (vpmuludq; AVX2 2×256 / AVX 4×128 SSE2; NEON vmovn+vmull;
