@@ -1,3 +1,31 @@
+## 2026-11-17 — INVENTORY: ndarray::simd vs wide 1.7.1 vs pulp 0.23 (doc: `.claude/knowledge/simd-crate-comparison-wide-pulp-2026-11-17.md`)
+
+Feature matrix, 10 tech-debt items, an ideas-to-steal table. Headline debt, read
+from source: AVX2 `F64x8::simd_le` and `F64Mask8::select` are scalar loops
+(`simd_avx2.rs:982`, `:1153`). The root cause is the one-shape `u8` mask. pulp makes the
+mask an associated type that differs per tier (vector on V3, `b8` on V4); wide makes it
+the vector type. `F64x4` has no compares on any stable arm, and `F64Mask4` exists
+only in `simd_nightly/masks.rs:148`, so the backends offer different APIs.
+
+Mandelbrot bench prepared on `AdaWorldAPI/mandelbrot-simd` branch
+`claude/practical-newton-u8lir8` (local, uncommitted: stable toolchain, `ndarray` and
+`wide8` arms, pulp `x86-v4`, in-process timer). NOT RUN: `cargo build` there was denied
+by the permission classifier. Predictions P1–P4 are pre-registered in the doc.
+
+Haiku card log (substrate-mapper, 6 units; orchestrator re-ran counts):
+| unit | runs | checked | wrong | missed |
+|---|---|---|---|---|
+| wide traits | 1 | trait/method counts read via its own map | 0 | 0 |
+| wide per-type | 1 | brief pattern missed `pub(crate)`; card self-corrected the pattern; hand-tallied table not used | 0 | 0 |
+| pulp core | 1 | 2 items Read (`first_true_m64s` :819, `select_u64s` :1447) | 1 (trait line 607 vs 608) | 0 |
+| pulp backends | 1 | 4 counts re-run (v1 109, v3 215, v4 370, aarch64 138) | 0 | 0 |
+| ndarray facade | 2 (1st BRIEF-INCOMPLETE) | 22 structs, 291 fns re-run | 0 | 0 |
+| ndarray extras | 2 (1st BRIEF-INCOMPLETE) | 5 counts re-run | 0 | 0 |
+Two briefs came back BRIEF-INCOMPLETE because they gave no caller space. The next brief must state `caller space: none` explicitly.
+
+Loose ends: run the bench (needs permission), objdump get_count per arm per tier,
+then decide on TD 1–3 (tier-native mask + F64x4 compares).
+
 ## 2026-11-15 — RESULT: D-ADD-PM, Codec9 `P × M` lanes added in place
 
 `examples/add_pm/` + `tests/add_pm.rs`; doc `.claude/knowledge/add-pm-probe.md`.
