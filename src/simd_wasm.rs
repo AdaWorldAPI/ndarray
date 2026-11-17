@@ -324,6 +324,86 @@ pub mod wasm32_simd {
         }
     }
 
+    impl F32x16 {
+        /// Lane mask: set iff the lane is NaN (`self != self`, unordered).
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let m = F32x16::from_array([0.0, f32::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]).is_nan();
+        /// assert_eq!(m.to_bitmask(), 0b10);
+        /// ```
+        #[inline(always)]
+        pub fn is_nan(self) -> F32Mask16 {
+            self.simd_ne(self)
+        }
+
+        /// Lane mask: set iff the lane is neither NaN nor infinite.
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let m = F32x16::from_array([0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]).is_finite();
+        /// assert_eq!(m.to_bitmask(), 0b1111_1111_1111_0001);
+        /// ```
+        #[inline(always)]
+        pub fn is_finite(self) -> F32Mask16 {
+            self.abs().simd_lt(Self::splat(f32::INFINITY))
+        }
+
+        /// Lane mask: set iff the lane is +Inf or -Inf.
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// let m = F32x16::from_array([0.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]).is_infinite();
+        /// assert_eq!(m.to_bitmask(), 0b1100);
+        /// ```
+        #[inline(always)]
+        pub fn is_infinite(self) -> F32Mask16 {
+            self.abs().simd_eq(Self::splat(f32::INFINITY))
+        }
+
+        /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and ±0).
+        ///
+        /// One `v128_bitselect` per register.
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// assert_eq!(F32x16::splat(3.0).copysign(F32x16::splat(-0.0)).to_array(), [-3.0; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn copysign(self, sign: Self) -> Self {
+            let m = u32x4_splat(0x8000_0000);
+            Self([
+                v128_bitselect(sign.0[0], self.0[0], m),
+                v128_bitselect(sign.0[1], self.0[1], m),
+                v128_bitselect(sign.0[2], self.0[2], m),
+                v128_bitselect(sign.0[3], self.0[3], m),
+            ])
+        }
+
+        /// Exactly `1.0 / self` (IEEE division, correctly rounded).
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// assert_eq!(F32x16::splat(4.0).recip().to_array(), [0.25; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn recip(self) -> Self {
+            Self::splat(1.0) / self
+        }
+
+        /// Reciprocal "approximation": exact on wasm (simd128 has no reciprocal
+        /// estimate), i.e. identical to [`Self::recip`].
+        ///
+        /// ```
+        /// use ndarray::simd::F32x16;
+        /// assert_eq!(F32x16::splat(4.0).recip_approx().to_array(), [0.25; 16]);
+        /// ```
+        #[inline(always)]
+        pub fn recip_approx(self) -> Self {
+            self.recip()
+        }
+    }
+
     impl Add for F32x16 {
         type Output = Self;
         #[inline(always)]
@@ -689,6 +769,86 @@ pub mod wasm32_simd {
                 o[i] = f64::from_bits(b[i]);
             }
             Self::from_array(o)
+        }
+    }
+
+    impl F64x8 {
+        /// Lane mask: set iff the lane is NaN (`self != self`, unordered).
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let m = F64x8::from_array([0.0, f64::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).is_nan();
+        /// assert_eq!(m.to_bitmask(), 0b10);
+        /// ```
+        #[inline(always)]
+        pub fn is_nan(self) -> F64Mask8 {
+            self.simd_ne(self)
+        }
+
+        /// Lane mask: set iff the lane is neither NaN nor infinite.
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let m = F64x8::from_array([0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.0, 2.0, 3.0, 4.0]).is_finite();
+        /// assert_eq!(m.to_bitmask(), 0b1111_0001);
+        /// ```
+        #[inline(always)]
+        pub fn is_finite(self) -> F64Mask8 {
+            self.abs().simd_lt(Self::splat(f64::INFINITY))
+        }
+
+        /// Lane mask: set iff the lane is +Inf or -Inf.
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// let m = F64x8::from_array([0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1.0, 2.0, 3.0, 4.0]).is_infinite();
+        /// assert_eq!(m.to_bitmask(), 0b1100);
+        /// ```
+        #[inline(always)]
+        pub fn is_infinite(self) -> F64Mask8 {
+            self.abs().simd_eq(Self::splat(f64::INFINITY))
+        }
+
+        /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and ±0).
+        ///
+        /// One `v128_bitselect` per register.
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// assert_eq!(F64x8::splat(3.0).copysign(F64x8::splat(-0.0)).to_array(), [-3.0; 8]);
+        /// ```
+        #[inline(always)]
+        pub fn copysign(self, sign: Self) -> Self {
+            let m = u64x2_splat(0x8000_0000_0000_0000);
+            Self([
+                v128_bitselect(sign.0[0], self.0[0], m),
+                v128_bitselect(sign.0[1], self.0[1], m),
+                v128_bitselect(sign.0[2], self.0[2], m),
+                v128_bitselect(sign.0[3], self.0[3], m),
+            ])
+        }
+
+        /// Exactly `1.0 / self` (IEEE division, correctly rounded).
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// assert_eq!(F64x8::splat(4.0).recip().to_array(), [0.25; 8]);
+        /// ```
+        #[inline(always)]
+        pub fn recip(self) -> Self {
+            Self::splat(1.0) / self
+        }
+
+        /// Reciprocal "approximation": exact on wasm (simd128 has no reciprocal
+        /// estimate), i.e. identical to [`Self::recip`].
+        ///
+        /// ```
+        /// use ndarray::simd::F64x8;
+        /// assert_eq!(F64x8::splat(4.0).recip_approx().to_array(), [0.25; 8]);
+        /// ```
+        #[inline(always)]
+        pub fn recip_approx(self) -> Self {
+            self.recip()
         }
     }
 

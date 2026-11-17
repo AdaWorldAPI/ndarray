@@ -672,6 +672,81 @@ impl F32x16 {
     }
 }
 
+impl F32x16 {
+    /// Lane set iff the lane is NaN.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let mut a = [0.0f32; 16];
+    /// a[1] = f32::NAN;
+    /// a[15] = f32::NAN;
+    /// assert_eq!(F32x16::from_array(a).is_nan().to_bitmask(), 0b1000_0000_0000_0010);
+    /// ```
+    #[inline(always)]
+    pub fn is_nan(self) -> F32Mask16 {
+        F32Mask16(self.0.is_nan(), self.1.is_nan())
+    }
+    /// Lane set iff the lane is neither NaN nor ±Inf.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let mut a = [0.0f32; 16];
+    /// a[0] = f32::NAN;
+    /// a[9] = f32::INFINITY;
+    /// assert_eq!(F32x16::from_array(a).is_finite().to_bitmask(), 0b1111_1101_1111_1110);
+    /// ```
+    #[inline(always)]
+    pub fn is_finite(self) -> F32Mask16 {
+        F32Mask16(self.0.is_finite(), self.1.is_finite())
+    }
+    /// Lane set iff the lane is +Inf or −Inf.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let mut a = [0.0f32; 16];
+    /// a[0] = f32::NAN;
+    /// a[9] = f32::NEG_INFINITY;
+    /// a[3] = f32::INFINITY;
+    /// assert_eq!(F32x16::from_array(a).is_infinite().to_bitmask(), 0b0000_0010_0000_1000);
+    /// ```
+    #[inline(always)]
+    pub fn is_infinite(self) -> F32Mask16 {
+        F32Mask16(self.0.is_infinite(), self.1.is_infinite())
+    }
+    /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and ±0).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// assert_eq!(F32x16::splat(3.0).copysign(F32x16::splat(-0.0)).to_array(), [-3.0; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        Self(self.0.copysign(sign.0), self.1.copysign(sign.1))
+    }
+    /// Exactly `1.0 / self` (IEEE division, correctly rounded).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// assert_eq!(F32x16::splat(4.0).recip().to_array(), [0.25; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        Self(self.0.recip(), self.1.recip())
+    }
+    /// Approximation of `1/self`. On AVX2 this is the 256-bit half's bound:
+    /// ≤ 1.5·2^-12 relative error for f32 (`vrcpps`), exact for f64.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let r = F32x16::splat(4.0).recip_approx().to_array();
+    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 2f32.powi(-11)));
+    /// ```
+    #[inline(always)]
+    pub fn recip_approx(self) -> Self {
+        Self(self.0.recip_approx(), self.1.recip_approx())
+    }
+}
+
 impl Add for F32x16 {
     type Output = Self;
     #[inline(always)]
@@ -938,6 +1013,74 @@ impl F64x8 {
             o[i] = f64::from_bits(bits.0[i]);
         }
         Self::from_array(o)
+    }
+}
+
+impl F64x8 {
+    /// Lane set iff the lane is NaN.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let m = F64x8::from_array([0.0, f64::NAN, 1.0, 2.0, 3.0, 4.0, 5.0, f64::NAN]).is_nan();
+    /// assert_eq!(m.to_bitmask(), 0b1000_0010);
+    /// ```
+    #[inline(always)]
+    pub fn is_nan(self) -> F64Mask8 {
+        F64Mask8(self.0.is_nan(), self.1.is_nan())
+    }
+    /// Lane set iff the lane is neither NaN nor ±Inf.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let m = F64x8::from_array([0.0, f64::NAN, f64::INFINITY, 2.0, 3.0, f64::NEG_INFINITY, 5.0, 6.0]).is_finite();
+    /// assert_eq!(m.to_bitmask(), 0b1101_1001);
+    /// ```
+    #[inline(always)]
+    pub fn is_finite(self) -> F64Mask8 {
+        F64Mask8(self.0.is_finite(), self.1.is_finite())
+    }
+    /// Lane set iff the lane is +Inf or −Inf.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let m = F64x8::from_array([0.0, f64::NAN, f64::INFINITY, 2.0, 3.0, f64::NEG_INFINITY, 5.0, 6.0]).is_infinite();
+    /// assert_eq!(m.to_bitmask(), 0b0010_0100);
+    /// ```
+    #[inline(always)]
+    pub fn is_infinite(self) -> F64Mask8 {
+        F64Mask8(self.0.is_infinite(), self.1.is_infinite())
+    }
+    /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and ±0).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// assert_eq!(F64x8::splat(3.0).copysign(F64x8::splat(-0.0)).to_array(), [-3.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        Self(self.0.copysign(sign.0), self.1.copysign(sign.1))
+    }
+    /// Exactly `1.0 / self` (IEEE division, correctly rounded).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// assert_eq!(F64x8::splat(4.0).recip().to_array(), [0.25; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        Self(self.0.recip(), self.1.recip())
+    }
+    /// Approximation of `1/self`. On AVX2 this is the 256-bit half's bound:
+    /// ≤ 1.5·2^-12 relative error for f32 (`vrcpps`), exact for f64.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let r = F64x8::splat(4.0).recip_approx().to_array();
+    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 2f64.powi(-11)));
+    /// ```
+    #[inline(always)]
+    pub fn recip_approx(self) -> Self {
+        Self(self.0.recip_approx(), self.1.recip_approx())
     }
 }
 

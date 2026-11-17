@@ -246,6 +246,92 @@ impl F32x16 {
     }
 }
 
+impl F32x16 {
+    /// Lane-wise NaN test: a lane is set iff it is NaN (`x != x`, unordered).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let mut a = [1.0; 16];
+    /// a[1] = f32::NAN;
+    /// assert_eq!(F32x16::from_array(a).is_nan().to_bitmask(), 0b10);
+    /// ```
+    #[inline(always)]
+    pub fn is_nan(self) -> F32Mask16 {
+        self.simd_ne(self)
+    }
+
+    /// Lane-wise finite test: set iff the lane is neither NaN nor +-Inf
+    /// (`|x| < INFINITY`, ordered, so false for NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let mut a = [1.0; 16];
+    /// a[0] = f32::INFINITY;
+    /// a[1] = f32::NAN;
+    /// assert_eq!(F32x16::from_array(a).is_finite().to_bitmask(), 0b1111_1111_1111_1100);
+    /// ```
+    #[inline(always)]
+    pub fn is_finite(self) -> F32Mask16 {
+        self.abs().simd_lt(F32x16::splat(f32::INFINITY))
+    }
+
+    /// Lane-wise infinity test: set iff the lane is +Inf or -Inf.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let mut a = [1.0; 16];
+    /// a[0] = f32::INFINITY;
+    /// a[1] = f32::NEG_INFINITY;
+    /// a[2] = f32::NAN;
+    /// assert_eq!(F32x16::from_array(a).is_infinite().to_bitmask(), 0b011);
+    /// ```
+    #[inline(always)]
+    pub fn is_infinite(self) -> F32Mask16 {
+        self.abs().simd_eq(F32x16::splat(f32::INFINITY))
+    }
+
+    /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and +-0).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// assert_eq!(F32x16::splat(3.0).copysign(F32x16::splat(-0.0)).to_array(), [-3.0; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        // SAFETY: AVX-512F register-only ops. Imm 0xD8 = `c ? b : a` per bit.
+        unsafe {
+            let a = _mm512_castps_si512(self.0);
+            let b = _mm512_castps_si512(sign.0);
+            let c = _mm512_set1_epi32(i32::MIN);
+            Self(_mm512_castsi512_ps(_mm512_ternarylogic_epi32::<0xD8>(a, b, c)))
+        }
+    }
+
+    /// Exact reciprocal: `1.0 / self` (IEEE division, correctly rounded).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// assert_eq!(F32x16::splat(4.0).recip().to_array(), [0.25; 16]);
+    /// ```
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        F32x16::splat(1.0) / self
+    }
+
+    /// Approximate reciprocal `1 / self`. `_mm512_rcp14_ps`: relative error <= 2^-14.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x16;
+    /// let r = F32x16::splat(4.0).recip_approx().to_array();
+    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 0.001));
+    /// ```
+    #[inline(always)]
+    pub fn recip_approx(self) -> Self {
+        // SAFETY: AVX-512F register-only op (vrcp14ps).
+        Self(unsafe { _mm512_rcp14_ps(self.0) })
+    }
+}
+
 impl_bin_op!(F32x16, Add, add, _mm512_add_ps);
 impl_bin_op!(F32x16, Sub, sub, _mm512_sub_ps);
 impl_bin_op!(F32x16, Mul, mul, _mm512_mul_ps);
@@ -465,6 +551,92 @@ impl F64x8 {
     #[inline(always)]
     pub fn simd_ge(self, other: Self) -> F64Mask8 {
         other.simd_le(self)
+    }
+}
+
+impl F64x8 {
+    /// Lane-wise NaN test: a lane is set iff it is NaN (`x != x`, unordered).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let mut a = [1.0; 8];
+    /// a[1] = f64::NAN;
+    /// assert_eq!(F64x8::from_array(a).is_nan().to_bitmask(), 0b10);
+    /// ```
+    #[inline(always)]
+    pub fn is_nan(self) -> F64Mask8 {
+        self.simd_ne(self)
+    }
+
+    /// Lane-wise finite test: set iff the lane is neither NaN nor +-Inf
+    /// (`|x| < INFINITY`, ordered, so false for NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let mut a = [1.0; 8];
+    /// a[0] = f64::INFINITY;
+    /// a[1] = f64::NAN;
+    /// assert_eq!(F64x8::from_array(a).is_finite().to_bitmask(), 0b1111_1100);
+    /// ```
+    #[inline(always)]
+    pub fn is_finite(self) -> F64Mask8 {
+        self.abs().simd_lt(F64x8::splat(f64::INFINITY))
+    }
+
+    /// Lane-wise infinity test: set iff the lane is +Inf or -Inf.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let mut a = [1.0; 8];
+    /// a[0] = f64::INFINITY;
+    /// a[1] = f64::NEG_INFINITY;
+    /// a[2] = f64::NAN;
+    /// assert_eq!(F64x8::from_array(a).is_infinite().to_bitmask(), 0b011);
+    /// ```
+    #[inline(always)]
+    pub fn is_infinite(self) -> F64Mask8 {
+        self.abs().simd_eq(F64x8::splat(f64::INFINITY))
+    }
+
+    /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and +-0).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// assert_eq!(F64x8::splat(3.0).copysign(F64x8::splat(-0.0)).to_array(), [-3.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        // SAFETY: AVX-512F register-only ops. Imm 0xD8 = `c ? b : a` per bit.
+        unsafe {
+            let a = _mm512_castpd_si512(self.0);
+            let b = _mm512_castpd_si512(sign.0);
+            let c = _mm512_set1_epi64(i64::MIN);
+            Self(_mm512_castsi512_pd(_mm512_ternarylogic_epi64::<0xD8>(a, b, c)))
+        }
+    }
+
+    /// Exact reciprocal: `1.0 / self` (IEEE division, correctly rounded).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// assert_eq!(F64x8::splat(4.0).recip().to_array(), [0.25; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        F64x8::splat(1.0) / self
+    }
+
+    /// Approximate reciprocal `1 / self`. `_mm512_rcp14_pd`: relative error <= 2^-14.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x8;
+    /// let r = F64x8::splat(4.0).recip_approx().to_array();
+    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 0.001));
+    /// ```
+    #[inline(always)]
+    pub fn recip_approx(self) -> Self {
+        // SAFETY: AVX-512F register-only op (vrcp14pd).
+        Self(unsafe { _mm512_rcp14_pd(self.0) })
     }
 }
 
@@ -3212,6 +3384,99 @@ impl F32x8 {
     }
 }
 
+impl F32x8 {
+    /// Lane-wise NaN test: a lane is set iff it is NaN (`x != x`, unordered).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let mut a = [1.0; 8];
+    /// a[1] = f32::NAN;
+    /// assert_eq!(F32x8::from_array(a).is_nan().to_bitmask(), 0b10);
+    /// ```
+    #[inline(always)]
+    pub fn is_nan(self) -> F32Mask8 {
+        self.simd_ne(self)
+    }
+
+    /// Lane-wise finite test: set iff the lane is neither NaN nor +-Inf
+    /// (`|x| < INFINITY`, ordered, so false for NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let mut a = [1.0; 8];
+    /// a[0] = f32::INFINITY;
+    /// a[1] = f32::NAN;
+    /// assert_eq!(F32x8::from_array(a).is_finite().to_bitmask(), 0b1111_1100);
+    /// ```
+    #[inline(always)]
+    pub fn is_finite(self) -> F32Mask8 {
+        self.abs().simd_lt(F32x8::splat(f32::INFINITY))
+    }
+
+    /// Lane-wise infinity test: set iff the lane is +Inf or -Inf.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let mut a = [1.0; 8];
+    /// a[0] = f32::INFINITY;
+    /// a[1] = f32::NEG_INFINITY;
+    /// a[2] = f32::NAN;
+    /// assert_eq!(F32x8::from_array(a).is_infinite().to_bitmask(), 0b011);
+    /// ```
+    #[inline(always)]
+    pub fn is_infinite(self) -> F32Mask8 {
+        self.abs().simd_eq(F32x8::splat(f32::INFINITY))
+    }
+
+    /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and +-0).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(3.0).copysign(F32x8::splat(-0.0)).to_array(), [-3.0; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        // SAFETY: AVX register-only ops.
+        unsafe {
+            let m = _mm256_set1_ps(-0.0);
+            Self(_mm256_or_ps(_mm256_andnot_ps(m, self.0), _mm256_and_ps(m, sign.0)))
+        }
+    }
+
+    /// Exact reciprocal: `1.0 / self` (IEEE division, correctly rounded).
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// assert_eq!(F32x8::splat(4.0).recip().to_array(), [0.25; 8]);
+    /// ```
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        F32x8::splat(1.0) / self
+    }
+
+    /// Approximate reciprocal `1 / self`. With `avx512vl` enabled: `_mm256_rcp14_ps`, relative error <= 2^-14.
+    /// Otherwise: `_mm256_rcp_ps`, relative error <= 1.5 * 2^-12.
+    ///
+    /// ```
+    /// use ndarray::simd::F32x8;
+    /// let r = F32x8::splat(4.0).recip_approx().to_array();
+    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 0.001));
+    /// ```
+    #[inline(always)]
+    pub fn recip_approx(self) -> Self {
+        #[cfg(target_feature = "avx512vl")]
+        {
+            // SAFETY: avx512vl is enabled at compile time (vrcp14ps ymm).
+            Self(unsafe { _mm256_rcp14_ps(self.0) })
+        }
+        #[cfg(not(target_feature = "avx512vl"))]
+        {
+            // SAFETY: AVX register-only op (vrcpps).
+            Self(unsafe { _mm256_rcp_ps(self.0) })
+        }
+    }
+}
+
 impl Add for F32x8 {
     type Output = Self;
     #[inline(always)]
@@ -3559,6 +3824,98 @@ impl F64x4 {
     #[inline(always)]
     pub fn simd_ge(self, other: Self) -> F64Mask4 {
         other.simd_le(self)
+    }
+}
+
+impl F64x4 {
+    /// Lane-wise NaN test: a lane is set iff it is NaN (`x != x`, unordered).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// let mut a = [1.0; 4];
+    /// a[1] = f64::NAN;
+    /// assert_eq!(F64x4::from_array(a).is_nan().to_bitmask(), 0b10);
+    /// ```
+    #[inline(always)]
+    pub fn is_nan(self) -> F64Mask4 {
+        self.simd_ne(self)
+    }
+
+    /// Lane-wise finite test: set iff the lane is neither NaN nor +-Inf
+    /// (`|x| < INFINITY`, ordered, so false for NaN).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// let mut a = [1.0; 4];
+    /// a[0] = f64::INFINITY;
+    /// a[1] = f64::NAN;
+    /// assert_eq!(F64x4::from_array(a).is_finite().to_bitmask(), 0b1100);
+    /// ```
+    #[inline(always)]
+    pub fn is_finite(self) -> F64Mask4 {
+        self.abs().simd_lt(F64x4::splat(f64::INFINITY))
+    }
+
+    /// Lane-wise infinity test: set iff the lane is +Inf or -Inf.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// let mut a = [1.0; 4];
+    /// a[0] = f64::INFINITY;
+    /// a[1] = f64::NEG_INFINITY;
+    /// a[2] = f64::NAN;
+    /// assert_eq!(F64x4::from_array(a).is_infinite().to_bitmask(), 0b011);
+    /// ```
+    #[inline(always)]
+    pub fn is_infinite(self) -> F64Mask4 {
+        self.abs().simd_eq(F64x4::splat(f64::INFINITY))
+    }
+
+    /// Magnitude bits of `self`, sign bit of `sign` (bit-exact, also for NaN and +-0).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(3.0).copysign(F64x4::splat(-0.0)).to_array(), [-3.0; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        // SAFETY: AVX register-only ops.
+        unsafe {
+            let m = _mm256_set1_pd(-0.0);
+            Self(_mm256_or_pd(_mm256_andnot_pd(m, self.0), _mm256_and_pd(m, sign.0)))
+        }
+    }
+
+    /// Exact reciprocal: `1.0 / self` (IEEE division, correctly rounded).
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// assert_eq!(F64x4::splat(4.0).recip().to_array(), [0.25; 4]);
+    /// ```
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        F64x4::splat(1.0) / self
+    }
+
+    /// Approximate reciprocal `1 / self`. With `avx512vl` enabled: `_mm256_rcp14_pd`, relative error <= 2^-14.
+    /// Otherwise AVX has no f64 reciprocal estimate, so this is the exact `recip()`.
+    ///
+    /// ```
+    /// use ndarray::simd::F64x4;
+    /// let r = F64x4::splat(4.0).recip_approx().to_array();
+    /// assert!(r.iter().all(|&x| (x - 0.25).abs() <= 0.25 * 0.001));
+    /// ```
+    #[inline(always)]
+    pub fn recip_approx(self) -> Self {
+        #[cfg(target_feature = "avx512vl")]
+        {
+            // SAFETY: avx512vl is enabled at compile time (vrcp14pd ymm).
+            Self(unsafe { _mm256_rcp14_pd(self.0) })
+        }
+        #[cfg(not(target_feature = "avx512vl"))]
+        {
+            self.recip()
+        }
     }
 }
 

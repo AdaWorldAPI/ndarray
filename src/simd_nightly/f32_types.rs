@@ -446,3 +446,71 @@ impl Default for F32x8 {
         Self::splat(0.0)
     }
 }
+
+// F5 (plan simd-fruits-integration-v1): classification, copysign, reciprocal.
+impl F32x16 {
+    /// Lane set iff the lane is NaN.
+    #[inline(always)]
+    pub fn is_nan(self) -> F32Mask16 {
+        F32Mask16(self.0.is_nan())
+    }
+    /// Lane set iff the lane is neither NaN nor infinite.
+    #[inline(always)]
+    pub fn is_finite(self) -> F32Mask16 {
+        F32Mask16(self.0.is_finite())
+    }
+    /// Lane set iff the lane is +Inf or -Inf.
+    #[inline(always)]
+    pub fn is_infinite(self) -> F32Mask16 {
+        F32Mask16(self.0.is_infinite())
+    }
+    /// Magnitude of `self`, sign bit of `sign` (bit-exact).
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        Self(self.0.copysign(sign.0))
+    }
+    /// Exactly `1.0 / self` per lane.
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        Self(self.0.recip())
+    }
+    /// Approximate `1/self`; exact on the portable backend.
+    #[inline(always)]
+    pub fn recip_approx(self) -> Self {
+        self.recip()
+    }
+}
+
+// F5 (plan simd-fruits-integration-v1): classification, copysign, reciprocal.
+impl F32x8 {
+    /// Lane set iff the lane is NaN.
+    #[inline(always)]
+    pub fn is_nan(self) -> F32Mask8 {
+        F32Mask8(self.0.is_nan())
+    }
+    /// Lane set iff the lane is neither NaN nor infinite.
+    #[inline(always)]
+    pub fn is_finite(self) -> F32Mask8 {
+        F32Mask8(self.0.is_finite())
+    }
+    /// Lane set iff the lane is +Inf or -Inf.
+    #[inline(always)]
+    pub fn is_infinite(self) -> F32Mask8 {
+        F32Mask8(self.0.is_infinite())
+    }
+    /// Magnitude of `self`, sign bit of `sign` (bit-exact).
+    #[inline(always)]
+    pub fn copysign(self, sign: Self) -> Self {
+        Self(self.0.copysign(sign.0))
+    }
+    /// Exactly `1.0 / self` per lane.
+    #[inline(always)]
+    pub fn recip(self) -> Self {
+        Self(self.0.recip())
+    }
+    /// Approximate `1/self`; exact on the portable backend.
+    #[inline(always)]
+    pub fn recip_approx(self) -> Self {
+        self.recip()
+    }
+}

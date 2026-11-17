@@ -157,6 +157,60 @@ macro_rules! impl_float_type {
                 Self(out)
             }
 
+            #[doc = concat!("Lane mask: bit `i` set iff lane `i` is NaN.\n\n```\nuse ndarray::simd::", stringify!($name), ";\nlet mut a = [1.0; ", stringify!($lanes), "];\na[1] = f64::NAN as _;\nlet m = ", stringify!($name), "::from_array(a).is_nan();\nassert_eq!(m.to_bitmask(), 0b10);\n```")]
+            #[inline(always)]
+            pub fn is_nan(self) -> $mask {
+                let mut bits: $mask_prim = 0;
+                for i in 0..$lanes {
+                    if self.0[i].is_nan() {
+                        bits |= 1 << i;
+                    }
+                }
+                $mask(bits)
+            }
+
+            #[doc = concat!("Lane mask: bit `i` set iff lane `i` is neither NaN nor infinite.\n\n```\nuse ndarray::simd::", stringify!($name), ";\nlet mut a = [1.0; ", stringify!($lanes), "];\na[0] = f64::INFINITY as _;\nlet m = ", stringify!($name), "::from_array(a).is_finite();\nassert_eq!(m.to_bitmask() & 1, 0);\nassert_eq!((m.to_bitmask() >> 1) & 1, 1);\n```")]
+            #[inline(always)]
+            pub fn is_finite(self) -> $mask {
+                let mut bits: $mask_prim = 0;
+                for i in 0..$lanes {
+                    if self.0[i].is_finite() {
+                        bits |= 1 << i;
+                    }
+                }
+                $mask(bits)
+            }
+
+            #[doc = concat!("Lane mask: bit `i` set iff lane `i` is +Inf or -Inf.\n\n```\nuse ndarray::simd::", stringify!($name), ";\nlet mut a = [1.0; ", stringify!($lanes), "];\na[0] = f64::NEG_INFINITY as _;\nlet m = ", stringify!($name), "::from_array(a).is_infinite();\nassert_eq!(m.to_bitmask(), 0b1);\n```")]
+            #[inline(always)]
+            pub fn is_infinite(self) -> $mask {
+                let mut bits: $mask_prim = 0;
+                for i in 0..$lanes {
+                    if self.0[i].is_infinite() {
+                        bits |= 1 << i;
+                    }
+                }
+                $mask(bits)
+            }
+
+            #[doc = concat!("Magnitude of `self`, sign bit of `sign` (bit-exact, also for NaN and zeros).\n\n```\nuse ndarray::simd::", stringify!($name), ";\nlet r = ", stringify!($name), "::splat(3.0).copysign(", stringify!($name), "::splat(-0.0));\nassert_eq!(r.to_array(), [-3.0; ", stringify!($lanes), "]);\n```")]
+            #[inline(always)]
+            pub fn copysign(self, sign: Self) -> Self {
+                Self(core::array::from_fn(|i| self.0[i].copysign(sign.0[i])))
+            }
+
+            #[doc = concat!("Exactly `1.0 / self` per lane (IEEE division).\n\n```\nuse ndarray::simd::", stringify!($name), ";\nlet r = ", stringify!($name), "::splat(4.0).recip();\nassert_eq!(r.to_array(), [0.25; ", stringify!($lanes), "]);\n```")]
+            #[inline(always)]
+            pub fn recip(self) -> Self {
+                Self(core::array::from_fn(|i| 1.0 / self.0[i]))
+            }
+
+            #[doc = concat!("Approximate `1/self`. Exact on the scalar arm (relative error 0, the same as `recip`).\n\n```\nuse ndarray::simd::", stringify!($name), ";\nlet r = ", stringify!($name), "::splat(4.0).recip_approx();\nassert_eq!(r.to_array(), [0.25; ", stringify!($lanes), "]);\n```")]
+            #[inline(always)]
+            pub fn recip_approx(self) -> Self {
+                self.recip()
+            }
+
             #[inline(always)]
             pub fn simd_lt(self, other: Self) -> $mask {
                 let mut bits: $mask_prim = 0;

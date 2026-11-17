@@ -1,3 +1,22 @@
+## 2026-11-17 — LANDED: simd-fruits F1+F2+F3 and F5 (branch claude/practical-newton-u8lir8, PR #435)
+
+- F1+F2+F3 (orchestrator-written): full F32x8/F64x4 API with F32Mask8/F64Mask4 lane masks on every
+  stable arm; AVX2 F32Mask16/F64Mask8 are now pairs of lane masks, so the F32x16/F64x8 scalar
+  compare/select/min/max/sqrt/round/floor loops are gone; every mask gets from_bitmask/any/all/none
+  and & | ^ !. AVX2 simd_min/max NaN rule now matches AVX-512 (vminps).
+- F5 (Sonnet-drafted, one worker per backend file): is_nan/is_finite/is_infinite/copysign/recip/
+  recip_approx on F32x16/F64x8/F32x8/F64x4. Measured recip_approx worst relative error (f32 sweep):
+  AVX-512 3.96e-5 (vrcp14), AVX2/AVX 2.99e-4 (vrcpps), exact arms 4.3e-8.
+- Evidence: tests/simd_lane_masks.rs 7/7 and tests/simd_float_classify.rs 3/3 on native(v4), v3, avx,
+  v2, aarch64-qemu and nightly-simd; disable runs red (AVX2 to_bitmask shift; copysign imm 0xE4);
+  lib 2743 (v4) / 2692 (v3) passed; masking-parity all 6 arms PASS; clippy/fmt/guard clean.
+
+Sonnet card log (F5 wave): 5 runs (avx512, avx2, scalar, neon, wasm), all code compiled first try on
+every arm and passed parity; items wrong: 0 code, 1 report claim (scalar worker said F32Mask16/
+F64Mask8 have no to_bitmask — they do, simd_scalar.rs:1433), doctests in scalar+neon read mask `.0`
+(representation-dependent) — orchestrator switched 9 to to_bitmask(). Nightly backend F5 + the
+missing F64x4::from_bits added by the orchestrator.
+
 ## 2026-11-17 — PLAN: `.claude/plans/simd-fruits-integration-v1.md` (wide/pulp ideas ranked by signal, AVX-512 first)
 
 P0 = F1 finish `F32x8`/`F64x4` (compares, min/max, mul_add) on every stable arm (also
