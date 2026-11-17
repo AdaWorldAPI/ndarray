@@ -1,3 +1,15 @@
+## 2026-11-17 — LANDED: simd-fruits F4 (masked tail load/store) — P0 F1/F2 + P1 F4–F7 complete
+
+`load_partial(&[T])` / `store_partial(&mut [T])` on F32x16, F64x8, F32x8, F64x4, U8x64, I32x16, U32x16
+(src/simd_partial.rs, one Sonnet worker). AVX-512: maskz_loadu / mask_storeu with k = low-n bits (BW for
+U8x64); AVX 256-bit floats: vmaskmovps/pd; everything else: one memcpy into a zeroed buffer + full load.
+tests/simd_partial.rs 3/3 on v4, v3, avx, v2, aarch64-qemu, nightly (every tail length 0..=LANES+1,
+store writes nothing outside the window). Disable run (mask16 enables lane n) → SIGSEGV on the empty-
+slice case: with the correct mask the dangling pointer of an empty slice is never dereferenced — direct
+evidence that masked-off lanes are not accessed (the fault-safety property). Sonnet card: 1 run, 0 defects.
+Local gate list now also: `cargo test --no-run --no-default-features` (RUSTFLAGS=-Dwarnings) and
+`python3 tools/gen_ternlog_bodies.py --check`.
+
 ## 2026-11-17 — LANDED: simd-fruits F7 + CI fix (AVX2 U8x64 burn-down; D-ADD-PM loose end closed)
 
 AVX2 `U8x64::saturating_add/sub` are two `U8x32` vpaddusb/vpsubusb halves; `mask_blend(u64)` expands
