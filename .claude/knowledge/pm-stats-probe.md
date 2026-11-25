@@ -106,4 +106,17 @@ from existing words; no new primitive.
 - On AVX-512 vertical accumulation saves about 0.8 ns per 64 lanes (20–27%).
 - On AVX2 it is no better and usually worse: the `U16x32` widen and add are two halves each, which costs more than the `vpsadbw` it replaces.
 - So a vertical accumulator is an AVX-512 realization choice, not a portable rule. A polyfill word for it would need a per-backend body (on AVX2 the horizontal form stays).
-- Not built: a `vpsadbw` that returns its `U64x8` partials (no such word exists), which would avoid the widening on both tiers.
+- ⊘ CORRECTED 2026-11-25: this line said a `vpsadbw` that returns its `U64x8` partials did not exist. It does: `U64x8::sum8_u8_add_masked(a, keep)` (ndarray #407), on every backend, and it takes the selection mask directly, so no blend is needed either.
+
+### The existing masked SAD word (`sum_abs_sad`)
+
+Same population, same two runs per tier:
+
+| | horizontal | vertical (`U16x32`) | `sum8_u8_add_masked` |
+|---|---|---|---|
+| AVX-512, L2-resident | 2.94–2.97 | 2.15 | **1.25–1.33** |
+| AVX-512, 16M lanes | 3.8–5.9 | 2.8–5.0 | **2.7–4.4** |
+| AVX2, L2-resident | 6.28–6.31 | 7.8–7.9 | **4.16–4.17** |
+| AVX2, 16M lanes | 11.3–12.0 | 16.3–17.9 | **6.0–7.5** |
+
+It is the fastest of the three on both tiers: 2.3× the horizontal form on AVX-512, 1.5× on AVX2, where the widening accumulator lost. So the portable rule is "accumulate with `sum8_u8_add_masked`", and the widening accumulator above is superseded. The disable run (negatives masked by `P` instead of `!P`) is red.
