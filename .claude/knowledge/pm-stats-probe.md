@@ -87,6 +87,23 @@ pack_saturate_u8}` (lane-order preserving), `abakus::pm::touched`,
 `I16x32::cmp_gt`. `masked_group_bounded_power_sums_u8` is a scalar keyed
 fold (`group_walk`, one row at a time), not a SIMD kernel.
 
-Missing and worth naming: a vertical byte-sum accumulator. `sum_bytes_u64`
-reduces horizontally on every call; a fold that kept the `U64x8` partials
-across blocks would pay one horizontal reduction per tile.
+## Vertical byte accumulation (follow-up, 2026-11-25)
+
+`sum_abs_vertical` widens each masked magnitude block into `U16x32` partials
+and reduces horizontally once per 128 blocks (`2 × 255 × 128 = 65_280`; a
+129-block tile wraps, and the disable run with 129 is red). It is composed
+from existing words; no new primitive.
+
+`S` and `A` together, 50% selection, ns per 64 lanes, two runs:
+
+| | horizontal per block | vertical per tile |
+|---|---|---|
+| AVX-512, L2-resident | 2.97–3.56 | 2.15–2.73 |
+| AVX-512, 16M lanes | 5.59–6.41 | 4.83–5.49 |
+| AVX2, L2-resident | 7.6–9.6 | 8.0–10.9 |
+| AVX2, 16M lanes | 7.7–11.0 | 9.7–16.6 |
+
+- On AVX-512 vertical accumulation saves about 0.8 ns per 64 lanes (20–27%).
+- On AVX2 it is no better and usually worse: the `U16x32` widen and add are two halves each, which costs more than the `vpsadbw` it replaces.
+- So a vertical accumulator is an AVX-512 realization choice, not a portable rule. A polyfill word for it would need a per-backend body (on AVX2 the horizontal form stays).
+- Not built: a `vpsadbw` that returns its `U64x8` partials (no such word exists), which would avoid the widening on both tiers.
