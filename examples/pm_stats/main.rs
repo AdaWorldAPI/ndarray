@@ -232,6 +232,40 @@ fn main() {
         }
     }
 
+    println!("\n[1b] S and A together: horizontal per block vs vertical per tile, mixed, 50% selection");
+    println!("{:<12} {:>10} {:>10}", "lanes", "horiz", "vertical");
+    for blocks in [128usize, 1024, 262_144] {
+        let d = data(blocks, 50, Mix::Mixed, 13);
+        let h = fold_soa(
+            &d.mags,
+            &d.pos,
+            &d.sel,
+            Demand {
+                n: false,
+                s: true,
+                q: false,
+                a: true,
+            },
+        );
+        assert_eq!(sum_abs_vertical(&d.mags, &d.pos, &d.sel), (h.s, h.a));
+        println!(
+            "{:<12} {:>10.2} {:>10.2}",
+            blocks * 64,
+            time(blocks, || fold_soa(
+                &d.mags,
+                &d.pos,
+                &d.sel,
+                Demand {
+                    n: false,
+                    s: true,
+                    q: false,
+                    a: true
+                }
+            )),
+            time(blocks, || sum_abs_vertical(&d.mags, &d.pos, &d.sel)),
+        );
+    }
+
     println!("\n[1] all four statistics (N, S, Q, A), mixed, 50% selection, by working set");
     println!("{:<12} {:>10} {:>10}", "lanes", "fold", "i16");
     for blocks in [1usize, 1024, 262_144] {
