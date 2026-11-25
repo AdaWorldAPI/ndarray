@@ -44,8 +44,18 @@ pub struct Demand {
 }
 
 impl Demand {
-    pub const ALL: Demand = Demand { n: true, s: true, q: true, a: true };
-    pub const SUM: Demand = Demand { n: false, s: true, q: false, a: false };
+    pub const ALL: Demand = Demand {
+        n: true,
+        s: true,
+        q: true,
+        a: true,
+    };
+    pub const SUM: Demand = Demand {
+        n: false,
+        s: true,
+        q: false,
+        a: false,
+    };
 }
 
 /// `N` selected touched values, `S = Σx`, `Q = Σx²`, `A = Σ|x|`. Fields not
@@ -81,22 +91,47 @@ pub fn sum_total_minus_twice_neg(xs: &[Pm], sel: &[u64]) -> i64 {
 pub fn fold(xs: &[Pm], sel: &[u64], d: Demand) -> Stats {
     let mut st = Stats::default();
     for (x, &m) in xs.iter().zip(sel) {
-        if d.n {
-            st.n += u64::from((m & touched(*x)).count_ones());
+        fold_block(*x, m, d, &mut st);
+    }
+    st
+}
+
+/// One block of [`fold`].
+#[inline(always)]
+pub fn fold_block(x: Pm, m: u64, d: Demand, st: &mut Stats) {
+    if d.n {
+        st.n += u64::from((m & touched(x)).count_ones());
+    }
+    if d.s || d.a {
+        let a = msum(m, x.mag);
+        if d.a {
+            st.a += a;
         }
-        if d.s || d.a {
-            let a = msum(m, x.mag);
-            if d.a {
-                st.a += a;
-            }
-            if d.s {
-                st.s += a as i64 - 2 * msum(m & !x.pos, x.mag) as i64;
-            }
+        if d.s {
+            st.s += a as i64 - 2 * msum(m & !x.pos, x.mag) as i64;
         }
-        if d.q {
-            let mb = U8x64::mask_blend(m, U8x64::splat(0), x.mag);
-            st.q += prod_sum(mb, mb);
-        }
+    }
+    if d.q {
+        let mb = U8x64::mask_blend(m, U8x64::splat(0), x.mag);
+        st.q += prod_sum(mb, mb);
+    }
+}
+
+/// The register shape a source lends: a `u8` magnitude slab and its `u64`
+/// polarity plane, 64 lanes per word. Reads each block in place.
+#[inline(always)]
+pub fn block_at(mags: &[u8], pos: &[u64], b: usize) -> Pm {
+    Pm {
+        mag: U8x64::from_slice(&mags[b * 64..b * 64 + 64]),
+        pos: pos[b],
+    }
+}
+
+/// [`fold`] over the borrowed slab and plane.
+pub fn fold_soa(mags: &[u8], pos: &[u64], sel: &[u64], d: Demand) -> Stats {
+    let mut st = Stats::default();
+    for (b, &m) in sel.iter().enumerate() {
+        fold_block(block_at(mags, pos, b), m, d, &mut st);
     }
     st
 }
@@ -128,7 +163,10 @@ pub fn lt(a: Pm, b: Pm) -> Cmp {
     let gab = a.mag.cmpgt_mask(b.mag);
     let gba = b.mag.cmpgt_mask(a.mag);
     let r = (!a.pos & b.pos) | (a.pos & b.pos & gba) | (!a.pos & !b.pos & gab);
-    Cmp { is: r & known, unknown: !known }
+    Cmp {
+        is: r & known,
+        unknown: !known,
+    }
 }
 
 /// Numerical `a = b`. `+0` has one code, so on touched lanes this equals
@@ -137,13 +175,19 @@ pub fn lt(a: Pm, b: Pm) -> Cmp {
 pub fn eq(a: Pm, b: Pm) -> Cmp {
     let known = touched(a) & touched(b);
     let r = !(a.pos ^ b.pos) & a.mag.cmpeq_mask(b.mag);
-    Cmp { is: r & known, unknown: !known }
+    Cmp {
+        is: r & known,
+        unknown: !known,
+    }
 }
 
 #[inline(always)]
 pub fn le(a: Pm, b: Pm) -> Cmp {
     let (l, e) = (lt(a, b), eq(a, b));
-    Cmp { is: l.is | e.is, unknown: l.unknown }
+    Cmp {
+        is: l.is | e.is,
+        unknown: l.unknown,
+    }
 }
 
 /// `x < c` for a constant: one magnitude compare plus `touched`, or for
@@ -229,7 +273,10 @@ pub fn block_of(codes: &[u16]) -> Pm {
         mag[i] = (c & 0xff) as u8;
         pos |= u64::from(c >> 8 & 1) << i;
     }
-    Pm { mag: U8x64::from_array(mag), pos }
+    Pm {
+        mag: U8x64::from_array(mag),
+        pos,
+    }
 }
 
 pub fn lane(x: Pm, i: usize) -> Option<i32> {

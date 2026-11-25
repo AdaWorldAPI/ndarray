@@ -11,9 +11,14 @@ mod stats;
 use ndarray::hpc::abakus::pm::Pm;
 use stats::*;
 
+/// One block of operand pairs with the codewords it was built from.
+type PairBlock = (Pm, Pm, [(u16, u16); 64]);
+
 /// Every (a, b) codeword pair, 64 pairs to a block.
-fn all_pairs() -> Vec<(Pm, Pm, [(u16, u16); 64])> {
-    let codes: Vec<(u16, u16)> = (0..512u16).flat_map(|a| (0..512u16).map(move |b| (a, b))).collect();
+fn all_pairs() -> Vec<PairBlock> {
+    let codes: Vec<(u16, u16)> = (0..512u16)
+        .flat_map(|a| (0..512u16).map(move |b| (a, b)))
+        .collect();
     codes
         .chunks(64)
         .map(|ch| {
@@ -120,7 +125,10 @@ fn sign_partitioned_products_match_the_oracle_on_every_codeword_pair() {
     assert_eq!(dot_total_minus_twice_opp(&a, &b, &sel), want);
     // Per block too: one-sided errors could cancel in the total.
     for t in &blocks {
-        let w: i64 = t.2.iter().filter_map(|&(x, y)| Some(i64::from(value_of(x)?) * i64::from(value_of(y)?))).sum();
+        let w: i64 =
+            t.2.iter()
+                .filter_map(|&(x, y)| Some(i64::from(value_of(x)?) * i64::from(value_of(y)?)))
+                .sum();
         assert_eq!(dot_split(&[t.0], &[t.1], &[u64::MAX]), w);
     }
 }
@@ -186,11 +194,30 @@ fn statistics_match_the_oracle_on_random_blocks() {
     }
 }
 
+/// The slab-and-plane form reads the same blocks as the `Pm` form.
+#[test]
+fn fold_over_the_lent_slab_equals_the_block_fold() {
+    let (xs, sel, codes) = random_blocks(65, 5);
+    let mut mags = Vec::new();
+    let mut pos = Vec::new();
+    for x in &xs {
+        mags.extend_from_slice(&x.mag.to_array());
+        pos.push(x.pos);
+    }
+    assert_eq!(fold_soa(&mags, &pos, &sel, Demand::ALL), oracle(&sel, &codes));
+}
+
 #[test]
 fn fold_computes_only_what_is_demanded() {
     let (xs, sel, codes) = random_blocks(9, 3);
     let want = oracle(&sel, &codes);
-    assert_eq!(fold(&xs, &sel, Demand::SUM), Stats { s: want.s, ..Stats::default() });
+    assert_eq!(
+        fold(&xs, &sel, Demand::SUM),
+        Stats {
+            s: want.s,
+            ..Stats::default()
+        }
+    );
 }
 
 #[test]
@@ -204,10 +231,18 @@ fn boundary_populations() {
     // Only established zeros: 64 values, sum 0, variance exactly 0.
     let z = block_of(&[256u16; 64]);
     let st = fold(&[z], &all, Demand::ALL);
-    assert_eq!(st, Stats { n: 64, ..Stats::default() });
+    assert_eq!(
+        st,
+        Stats {
+            n: 64,
+            ..Stats::default()
+        }
+    );
     assert_eq!(variance_parts(st), Some((0, 64 * 64)));
     // Full cancellation: +255 and -255 alternating.
-    let codes: Vec<u16> = (0..64).map(|i| if i % 2 == 0 { 256 + 255 } else { 255 }).collect();
+    let codes: Vec<u16> = (0..64)
+        .map(|i| if i % 2 == 0 { 256 + 255 } else { 255 })
+        .collect();
     let st = fold(&[block_of(&codes)], &all, Demand::ALL);
     assert_eq!((st.n, st.s, st.a, st.q), (64, 0, 64 * 255, 64 * 255 * 255));
     // Nearly constant: 63 × +200 and one +201; variance is 63/4096.
