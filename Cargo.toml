@@ -86,6 +86,11 @@ path = "examples/add_pm/main.rs"
 required-features = ["std"]
 
 [[example]]
+name = "pm_stats"
+path = "examples/pm_stats/main.rs"
+required-features = ["std"]
+
+[[example]]
 name = "u9_abacus"
 path = "examples/u9_abacus/main.rs"
 required-features = ["std"]
