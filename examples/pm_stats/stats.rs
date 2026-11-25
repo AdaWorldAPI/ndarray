@@ -136,6 +136,33 @@ pub fn fold_soa(mags: &[u8], pos: &[u64], sel: &[u64], d: Demand) -> Stats {
     st
 }
 
+/// Blocks a `u16` vertical accumulator can absorb before it may wrap: each
+/// block adds two bytes to every `u16` lane, and `2 × 255 × 128 = 65_280`.
+pub const VERTICAL_TILE: usize = 128;
+
+/// `S` and `A` with vertical accumulation: masked magnitudes are widened into
+/// `U16x32` partials and reduced horizontally once per [`VERTICAL_TILE`]
+/// blocks, instead of once per block as [`fold_block`] does.
+pub fn sum_abs_vertical(mags: &[u8], pos: &[u64], sel: &[u64]) -> (i64, u64) {
+    let z = U8x64::splat(0);
+    let hsum = |v: U16x32| v.to_array().iter().map(|&x| u64::from(x)).sum::<u64>();
+    let (mut s, mut a) = (0i64, 0u64);
+    for (t, tile) in sel.chunks(VERTICAL_TILE).enumerate() {
+        let (mut all, mut neg) = (U16x32::splat(0), U16x32::splat(0));
+        for (k, &m) in tile.iter().enumerate() {
+            let x = block_at(mags, pos, t * VERTICAL_TILE + k);
+            let ma = U8x64::mask_blend(m, z, x.mag);
+            let mn = U8x64::mask_blend(m & !x.pos, z, x.mag);
+            all += U16x32::from_u8x64_lo(ma) + U16x32::from_u8x64_hi(ma);
+            neg += U16x32::from_u8x64_lo(mn) + U16x32::from_u8x64_hi(mn);
+        }
+        let (ta, tn) = (hsum(all), hsum(neg));
+        a += ta;
+        s += ta as i64 - 2 * tn as i64;
+    }
+    (s, a)
+}
+
 /// Population variance as an exact rational `(N·Q − S², N²)`; `None` for an
 /// empty population. Exact in `i128` for any population this probe folds.
 pub fn variance_parts(st: Stats) -> Option<(i128, i128)> {

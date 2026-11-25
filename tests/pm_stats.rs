@@ -259,3 +259,27 @@ fn selection_density_extremes() {
         assert_eq!(fold(&xs, &sel, Demand::ALL), oracle(&sel, &codes));
     }
 }
+
+/// The vertical accumulator agrees with the oracle, including across a tile
+/// boundary and at the magnitude bound where a too-large tile would wrap.
+#[test]
+fn vertical_accumulation_matches_the_oracle() {
+    for (n, seed) in [(1usize, 2u64), (VERTICAL_TILE, 3), (3 * VERTICAL_TILE + 5, 4)] {
+        let (xs, sel, codes) = random_blocks(n, seed);
+        let mut mags = Vec::new();
+        let mut pos = Vec::new();
+        for x in &xs {
+            mags.extend_from_slice(&x.mag.to_array());
+            pos.push(x.pos);
+        }
+        let want = oracle(&sel, &codes);
+        assert_eq!(sum_abs_vertical(&mags, &pos, &sel), (want.s, want.a), "{n} blocks");
+    }
+    // Every lane at -255, fully selected, for a whole tile plus one block.
+    let n = VERTICAL_TILE + 1;
+    let mags = vec![255u8; n * 64];
+    let pos = vec![0u64; n];
+    let sel = vec![u64::MAX; n];
+    let a = (n * 64 * 255) as u64;
+    assert_eq!(sum_abs_vertical(&mags, &pos, &sel), (-(a as i64), a));
+}
