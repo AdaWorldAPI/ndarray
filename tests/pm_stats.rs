@@ -274,6 +274,7 @@ fn vertical_accumulation_matches_the_oracle() {
         }
         let want = oracle(&sel, &codes);
         assert_eq!(sum_abs_vertical(&mags, &pos, &sel), (want.s, want.a), "{n} blocks");
+        assert_eq!(sum_abs_sad(&mags, &pos, &sel), (want.s, want.a), "sad {n} blocks");
     }
     // Every lane at -255, fully selected, for a whole tile plus one block.
     let n = VERTICAL_TILE + 1;
@@ -282,4 +283,5 @@ fn vertical_accumulation_matches_the_oracle() {
     let sel = vec![u64::MAX; n];
     let a = (n * 64 * 255) as u64;
     assert_eq!(sum_abs_vertical(&mags, &pos, &sel), (-(a as i64), a));
+    assert_eq!(sum_abs_sad(&mags, &pos, &sel), (-(a as i64), a));
 }

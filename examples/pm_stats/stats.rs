@@ -10,7 +10,7 @@
 //! filter.
 
 use ndarray::hpc::abakus::pm::{touched, Pm};
-use ndarray::simd::{U16x32, U8x64};
+use ndarray::simd::{U16x32, U64x8, U8x64};
 
 /// Sum of the magnitudes in `mask`'s lanes (`vpsadbw` on AVX-512).
 #[inline(always)]
@@ -161,6 +161,20 @@ pub fn sum_abs_vertical(mags: &[u8], pos: &[u64], sel: &[u64]) -> (i64, u64) {
         s += ta as i64 - 2 * tn as i64;
     }
     (s, a)
+}
+
+/// `S` and `A` with the existing masked SAD word: `U64x8::sum8_u8_add_masked`
+/// keeps its eight partial sums, so nothing is widened and nothing reduced
+/// until the end. Its lanes hold more than 9 × 10^15 calls, so there is no tile.
+pub fn sum_abs_sad(mags: &[u8], pos: &[u64], sel: &[u64]) -> (i64, u64) {
+    let (mut all, mut neg) = (U64x8::splat(0), U64x8::splat(0));
+    for (b, &m) in sel.iter().enumerate() {
+        let x = block_at(mags, pos, b);
+        all = all.sum8_u8_add_masked(x.mag, m);
+        neg = neg.sum8_u8_add_masked(x.mag, m & !x.pos);
+    }
+    let (a, n) = (all.reduce_sum(), neg.reduce_sum());
+    (a as i64 - 2 * n as i64, a)
 }
 
 /// Population variance as an exact rational `(N·Q − S², N²)`; `None` for an
